@@ -18,6 +18,7 @@ class ExtractDisplayDataTests(unittest.TestCase):
                 exposure=(1, 250),
                 aperture=(28, 10),
                 iso=400,
+                focal_length=(50, 1),
             )
 
             display_data = extract_display_data(str(image_path))
@@ -28,6 +29,7 @@ class ExtractDisplayDataTests(unittest.TestCase):
                     "exposure": "1/250 s",
                     "aperture": "f/2.8",
                     "iso": "ISO 400",
+                    "focal_length": "50 mm",
                 },
             )
 
@@ -44,6 +46,7 @@ class ExtractDisplayDataTests(unittest.TestCase):
                     "exposure": "N/D",
                     "aperture": "N/D",
                     "iso": "N/D",
+                    "focal_length": "N/D",
                 },
             )
 
@@ -60,6 +63,7 @@ class ExtractDisplayDataTests(unittest.TestCase):
                     "exposure": "N/D",
                     "aperture": "N/D",
                     "iso": "N/D",
+                    "focal_length": "N/D",
                 },
             )
 
@@ -77,6 +81,7 @@ class ExtractDisplayDataTests(unittest.TestCase):
         exposure: tuple[int, int],
         aperture: tuple[int, int],
         iso: int,
+        focal_length: tuple[int, int],
     ) -> None:
         Image.new("RGB", (120, 80), "white").save(image_path, format="JPEG")
         exif_dict = {
@@ -85,6 +90,7 @@ class ExtractDisplayDataTests(unittest.TestCase):
                 piexif.ExifIFD.ExposureTime: exposure,
                 piexif.ExifIFD.FNumber: aperture,
                 piexif.ExifIFD.ISOSpeedRatings: iso,
+                piexif.ExifIFD.FocalLength: focal_length,
             },
             "GPS": {},
             "1st": {},

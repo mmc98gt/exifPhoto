@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Event, Thread
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from app.exif_service import extract_display_data
-from app.image_service import create_annotated_copy
+from app.batch_service import BatchProcessingResult, BatchProgress, process_images as process_images_batch
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
@@ -16,6 +17,7 @@ class ExifOverlayApp:
         self.root.title("EXIF Overlay")
         self.root.geometry("760x320")
         self.root.minsize(760, 320)
+        self.root.protocol("WM_DELETE_WINDOW", self._handle_close_request)
 
         self.selected_paths: list[str] = []
         self.selection_var = tk.StringVar(value="No has seleccionado imagenes.")
@@ -24,6 +26,10 @@ class ExifOverlayApp:
         self.status_var = tk.StringVar(
             value="Selecciona varias imagenes o una carpeta con archivos JPG, JPEG o PNG."
         )
+        self._event_queue: Queue[tuple[str, BatchProgress | BatchProcessingResult | str]] | None = None
+        self._worker_thread: Thread | None = None
+        self._cancel_event: Event | None = None
+        self._close_requested = False
 
         self._build_ui()
 
@@ -53,6 +59,14 @@ class ExifOverlayApp:
             state="disabled",
         )
         self.process_button.grid(row=0, column=2, sticky="e", pady=(0, 12))
+
+        self.stop_button = ttk.Button(
+            container,
+            text="Parar",
+            command=self.stop_processing,
+            state="disabled",
+        )
+        self.stop_button.grid(row=0, column=3, sticky="e", padx=(12, 0), pady=(0, 12))
 
         selection_label = ttk.Label(container, text="Seleccion:")
         selection_label.grid(row=1, column=0, sticky="nw", padx=(0, 12))
@@ -135,45 +149,125 @@ class ExifOverlayApp:
             return
 
         total_images = len(self.selected_paths)
-        processed_count = 0
-        failures: list[str] = []
 
         self._set_processing_state(is_processing=True)
         self._update_progress(0, total_images)
         self._set_status(f"Procesando {total_images} imagen(es)...", is_error=False)
-        self.root.update_idletasks()
+        self._close_requested = False
+        self._cancel_event = Event()
+        self.stop_button.config(state="normal")
+        self._event_queue = Queue()
+        self._worker_thread = Thread(
+            target=self._process_images_worker,
+            args=(list(self.selected_paths), self._event_queue, self._cancel_event),
+            daemon=True,
+            name="exif-overlay-ui-worker",
+        )
+        self._worker_thread.start()
+        self.root.after(50, self._poll_processing_events)
 
+    def _process_images_worker(
+        self,
+        image_paths: list[str],
+        event_queue: Queue[tuple[str, BatchProgress | BatchProcessingResult | str]],
+        cancel_event: Event,
+    ) -> None:
         try:
-            for index, image_path in enumerate(self.selected_paths, start=1):
-                path = Path(image_path)
-                self._set_status(f"Procesando {index}/{total_images}: {path.name}", is_error=False)
-                self.root.update_idletasks()
-
-                if not path.exists():
-                    failures.append(f"{path.name}: el archivo ya no existe.")
-                    self._update_progress(index, total_images)
-                    continue
-
-                try:
-                    exif_data = extract_display_data(str(path))
-                    create_annotated_copy(str(path), exif_data, output_subfolder="exportadas")
-                except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
-                    failures.append(f"{path.name}: {exc}")
-                except Exception as exc:
-                    failures.append(f"{path.name}: error inesperado: {exc}")
-                else:
-                    processed_count += 1
-
-                self._update_progress(index, total_images)
-                self.root.update_idletasks()
-        finally:
-            self._set_processing_state(is_processing=False)
-
-        if failures and processed_count == 0:
-            self._set_status(_build_batch_status(processed_count, failures), is_error=True)
+            result = process_images_batch(
+                image_paths,
+                output_subfolder="exportadas",
+                progress_callback=lambda progress: event_queue.put(("progress", progress)),
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            event_queue.put(("fatal_error", str(exc)))
             return
 
-        self._set_status(_build_batch_status(processed_count, failures), is_error=bool(failures))
+        event_queue.put(("completed", result))
+
+    def stop_processing(self) -> None:
+        if self._cancel_event is None or self._cancel_event.is_set():
+            return
+
+        self._cancel_event.set()
+        self.stop_button.config(state="disabled")
+        self._set_status(
+            "Deteniendo exportacion. Se finalizaran solo las imagenes ya iniciadas.",
+            is_error=False,
+        )
+
+    def _poll_processing_events(self) -> None:
+        event_queue = self._event_queue
+        if event_queue is None:
+            return
+
+        should_continue = True
+
+        while True:
+            try:
+                event_type, payload = event_queue.get_nowait()
+            except Empty:
+                break
+
+            if event_type == "progress":
+                if isinstance(payload, BatchProgress):
+                    self._handle_progress_update(payload)
+                continue
+
+            if event_type == "completed":
+                if isinstance(payload, BatchProcessingResult):
+                    self._finish_processing(payload)
+                should_continue = False
+                break
+
+            if event_type == "fatal_error":
+                message = payload if isinstance(payload, str) else "Error interno durante el procesamiento."
+                self._worker_thread = None
+                self._event_queue = None
+                self._cancel_event = None
+                self._set_processing_state(is_processing=False)
+                self._set_status(message, is_error=True)
+                if self._close_requested:
+                    self.root.destroy()
+                should_continue = False
+                break
+
+        if should_continue:
+            self.root.after(50, self._poll_processing_events)
+
+    def _handle_progress_update(self, progress: BatchProgress) -> None:
+        if progress.succeeded:
+            status_message = f"Procesada {progress.current}/{progress.total}: {progress.image_name}"
+            is_error = False
+        else:
+            status_message = progress.error_message or f"Error procesando {progress.image_name}"
+            is_error = True
+
+        self._update_progress(progress.current, progress.total)
+        self._set_status(status_message, is_error=is_error)
+
+    def _finish_processing(self, result: BatchProcessingResult) -> None:
+        self._worker_thread = None
+        self._event_queue = None
+        self._cancel_event = None
+        self._set_processing_state(is_processing=False)
+
+        is_error = bool(result.failures) and not result.cancelled
+        self._set_status(
+            _build_batch_status(result.processed_count, result.failures, result.cancelled),
+            is_error=is_error and result.processed_count == 0,
+        )
+
+        if self._close_requested:
+            self.root.destroy()
+
+    def _handle_close_request(self) -> None:
+        if self._worker_thread is None:
+            self.root.destroy()
+            return
+
+        self._close_requested = True
+        self.stop_processing()
 
     def _update_selection_state(self, source_path: str | None = None) -> None:
         self.selection_var.set(_format_selection_text(self.selected_paths, source_path=source_path))
@@ -184,6 +278,7 @@ class ExifOverlayApp:
         self.process_button.config(state=button_state)
         self.select_files_button.config(state="disabled" if is_processing else "normal")
         self.select_folder_button.config(state="disabled" if is_processing else "normal")
+        self.stop_button.config(state="normal" if is_processing and self._cancel_event is not None else "disabled")
 
     def _update_progress(self, current: int, total: int) -> None:
         percentage = 0 if total <= 0 else (current / total) * 100
@@ -229,7 +324,17 @@ def _format_selection_text(selected_paths: list[str], source_path: str | None = 
     return f"{len(selected_paths)} imagenes: {preview}"
 
 
-def _build_batch_status(processed_count: int, failures: list[str]) -> str:
+def _build_batch_status(processed_count: int, failures: list[str], cancelled: bool = False) -> str:
+    if cancelled:
+        summary = f"Exportacion detenida. Procesadas {processed_count} imagen(es)."
+        if not failures:
+            return summary
+
+        details = " | ".join(failures[:3])
+        if len(failures) > 3:
+            details = f"{details} | ..."
+        return f"{summary} Errores: {len(failures)}. {details}"
+
     if not failures:
         return f"Procesadas correctamente {processed_count} imagen(es)."
 

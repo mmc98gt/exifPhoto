@@ -25,6 +25,7 @@ def create_annotated_copy(
     try:
         with Image.open(path) as image:
             save_as_png = path.suffix.lower() == ".png"
+            _configure_decoder(image, save_as_png=save_as_png)
             prepared = _prepare_image(image, save_as_png=save_as_png)
             resized = _resize_for_timeline(prepared)
             annotated = _draw_overlay_text(resized, overlay_text)
@@ -52,6 +53,14 @@ def _prepare_image(image: Image.Image, save_as_png: bool) -> Image.Image:
     if save_as_png:
         return image.convert("RGBA") if image.mode != "RGBA" else image.copy()
     return image.convert("RGB")
+
+
+def _configure_decoder(image: Image.Image, save_as_png: bool) -> None:
+    if save_as_png or image.height <= MAX_OUTPUT_HEIGHT:
+        return
+
+    target_width = max(1, int(image.width * (MAX_OUTPUT_HEIGHT / image.height)))
+    image.draft("RGB", (target_width, MAX_OUTPUT_HEIGHT))
 
 
 def _build_overlay_text(exif_data: dict[str, str]) -> str:
