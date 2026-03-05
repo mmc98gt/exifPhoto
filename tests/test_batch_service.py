@@ -7,6 +7,7 @@ from threading import Event
 from PIL import Image
 
 from app.batch_service import BatchProgress, process_images
+from app.overlay_config import OverlayStyle, get_builtin_presets
 
 
 class ProcessImagesTests(unittest.TestCase):
@@ -20,6 +21,7 @@ class ProcessImagesTests(unittest.TestCase):
             progress_events: list[BatchProgress] = []
             result = process_images(
                 [str(image_one), str(image_two)],
+                preset=get_builtin_presets()[0],
                 max_workers=2,
                 progress_callback=progress_events.append,
             )
@@ -45,6 +47,7 @@ class ProcessImagesTests(unittest.TestCase):
             progress_events: list[BatchProgress] = []
             result = process_images(
                 [str(valid_image), str(broken_image), str(missing_image)],
+                preset=get_builtin_presets()[0],
                 max_workers=3,
                 progress_callback=progress_events.append,
             )
@@ -73,6 +76,7 @@ class ProcessImagesTests(unittest.TestCase):
 
             result = process_images(
                 image_paths,
+                preset=get_builtin_presets()[0],
                 max_workers=1,
                 progress_callback=on_progress,
                 cancel_event=cancel_event,
@@ -84,6 +88,24 @@ class ProcessImagesTests(unittest.TestCase):
             self.assertEqual(len(progress_events), 1)
             self.assertTrue((Path(temp_dir) / "exportadas" / "image_0_exif.jpg").exists())
             self.assertFalse((Path(temp_dir) / "exportadas" / "image_1_exif.jpg").exists())
+
+    def test_uses_snapshot_of_preset_passed_at_start(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "snapshot.jpg"
+            Image.new("RGB", (240, 120), "white").save(image_path, format="JPEG")
+            preset = get_builtin_presets()[0]
+            snapshot_preset = preset.__class__(
+                preset_id=preset.preset_id,
+                name=preset.name,
+                built_in=preset.built_in,
+                fields=preset.fields,
+                style=OverlayStyle.from_dict({**preset.style.to_dict(), "text_color": "#123456"}),
+            )
+
+            result = process_images([str(image_path)], preset=snapshot_preset, max_workers=1)
+
+            self.assertEqual(result.processed_count, 1)
+            self.assertTrue((Path(temp_dir) / "exportadas" / "snapshot_exif.jpg").exists())
 
 
 @contextmanager

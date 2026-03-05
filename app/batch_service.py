@@ -9,6 +9,7 @@ from typing import Callable
 
 from app.exif_service import extract_display_data
 from app.image_service import create_annotated_copy
+from app.overlay_config import OverlayPreset, get_builtin_presets
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,13 +35,19 @@ class BatchProcessingResult:
     cancelled: bool = False
 
 
-def process_image(image_path: str, output_subfolder: str = "exportadas") -> str:
+def process_image(
+    image_path: str,
+    preset: OverlayPreset | None = None,
+    output_subfolder: str = "exportadas",
+) -> str:
     exif_data = extract_display_data(image_path)
-    return create_annotated_copy(image_path, exif_data, output_subfolder=output_subfolder)
+    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
+    return create_annotated_copy(image_path, exif_data, active_preset, output_subfolder=output_subfolder)
 
 
 def process_images(
     image_paths: list[str],
+    preset: OverlayPreset | None = None,
     output_subfolder: str = "exportadas",
     max_workers: int | None = None,
     progress_callback: Callable[[BatchProgress], None] | None = None,
@@ -51,6 +58,7 @@ def process_images(
 
     total_images = len(image_paths)
     worker_count = _resolve_worker_count(total_images, max_workers)
+    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
     processed_count = 0
     failures: list[str] = []
     completed_count = 0
@@ -68,7 +76,7 @@ def process_images(
             image_path = next(pending_paths, None)
             if image_path is None:
                 break
-            future = executor.submit(process_image, image_path, output_subfolder)
+            future = executor.submit(process_image, image_path, active_preset, output_subfolder)
             active_futures[future] = image_path
 
         while active_futures:
@@ -100,7 +108,7 @@ def process_images(
 
                 next_path = next(pending_paths, None)
                 if next_path is not None:
-                    next_future = executor.submit(process_image, next_path, output_subfolder)
+                    next_future = executor.submit(process_image, next_path, active_preset, output_subfolder)
                     active_futures[next_future] = next_path
 
             if cancelled:
