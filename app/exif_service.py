@@ -32,11 +32,13 @@ def extract_display_data(image_path: str) -> dict[str, str]:
     exposure_value = exif_ifd.get(piexif.ExifIFD.ExposureTime)
     aperture_value = exif_ifd.get(piexif.ExifIFD.FNumber)
     iso_value = _get_iso_value(exif_ifd)
+    focal_length_value = exif_ifd.get(piexif.ExifIFD.FocalLength)
 
     return {
         "exposure": _format_exposure(exposure_value),
         "aperture": _format_fnumber(aperture_value),
         "iso": _format_iso(iso_value),
+        "focal_length": _format_focal_length(focal_length_value),
     }
 
 
@@ -61,6 +63,7 @@ def _empty_display_data() -> dict[str, str]:
         "exposure": NOT_AVAILABLE,
         "aperture": NOT_AVAILABLE,
         "iso": NOT_AVAILABLE,
+        "focal_length": NOT_AVAILABLE,
     }
 
 
@@ -118,6 +121,13 @@ def _format_iso(value: Any) -> str:
     if iso_value is None or iso_value <= 0:
         return NOT_AVAILABLE
     return f"ISO {int(round(iso_value))}"
+
+
+def _format_focal_length(value: Any) -> str:
+    focal_length = _rational_to_float(value)
+    if focal_length is None or focal_length <= 0:
+        return NOT_AVAILABLE
+    return f"{_format_decimal(focal_length)} mm"
 
 
 def _rational_to_float(value: Any) -> float | None:

@@ -58,7 +58,8 @@ def _build_overlay_text(exif_data: dict[str, str]) -> str:
     exposure = exif_data.get("exposure", "N/D")
     iso = exif_data.get("iso", "N/D")
     aperture = exif_data.get("aperture", "N/D")
-    return f"{exposure}  |  {iso}  |  {aperture}"
+    focal_length = exif_data.get("focal_length", "N/D")
+    return f"{exposure}  |  {iso}  |  {aperture}  |  {focal_length}"
 
 
 def _resize_for_timeline(image: Image.Image) -> Image.Image:
