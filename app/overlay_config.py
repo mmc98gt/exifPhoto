@@ -12,6 +12,16 @@ FONT_FAMILIES = tuple(FONT_FAMILY_TO_FILES)
 MIN_FONT_SIZE = 12
 MAX_FONT_SIZE = 160
 DEFAULT_SEPARATOR = "  |  "
+OVERLAY_MODES = ("exif", "watermark")
+WATERMARK_SOURCE_TYPES = ("text", "image")
+OVERLAY_POSITIONS = (
+    "bottom_center",
+    "bottom_left",
+    "bottom_right",
+    "top_left",
+    "top_right",
+    "center",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,14 +129,17 @@ class OverlayStyle:
     text_color: str = "#ffdc5a"
     position: str = "bottom_center"
     bottom_padding_ratio: float = 0.04
+    side_padding_ratio: float = 0.04
+    vertical_offset: int = 0
     shadow: ShadowStyle = field(default_factory=ShadowStyle)
     stroke: StrokeStyle = field(default_factory=StrokeStyle)
 
     def normalized(self) -> OverlayStyle:
         font_family = self.font_family if self.font_family in FONT_FAMILIES else "Arial"
         font_size_mode = self.font_size_mode if self.font_size_mode in {"auto", "manual"} else "auto"
-        position = self.position if self.position == "bottom_center" else "bottom_center"
+        position = self.position if self.position in OVERLAY_POSITIONS else "bottom_center"
         bottom_padding_ratio = min(max(float(self.bottom_padding_ratio), 0.0), 0.3)
+        side_padding_ratio = min(max(float(self.side_padding_ratio), 0.0), 0.3)
         return replace(
             self,
             font_family=font_family,
@@ -135,6 +148,8 @@ class OverlayStyle:
             text_color=_normalize_hex_color(self.text_color, "#ffdc5a"),
             position=position,
             bottom_padding_ratio=bottom_padding_ratio,
+            side_padding_ratio=side_padding_ratio,
+            vertical_offset=_clamp_int(self.vertical_offset, -400, 400),
             shadow=self.shadow.normalized(),
             stroke=self.stroke.normalized(),
         )
@@ -148,6 +163,8 @@ class OverlayStyle:
             "text_color": style.text_color,
             "position": style.position,
             "bottom_padding_ratio": style.bottom_padding_ratio,
+            "side_padding_ratio": style.side_padding_ratio,
+            "vertical_offset": style.vertical_offset,
             "shadow": style.shadow.to_dict(),
             "stroke": style.stroke.to_dict(),
         }
@@ -162,8 +179,59 @@ class OverlayStyle:
             text_color=str(payload.get("text_color", "#ffdc5a")),
             position=str(payload.get("position", "bottom_center")),
             bottom_padding_ratio=float(payload.get("bottom_padding_ratio", 0.04)),
+            side_padding_ratio=float(payload.get("side_padding_ratio", payload.get("bottom_padding_ratio", 0.04))),
+            vertical_offset=int(payload.get("vertical_offset", 0)),
             shadow=ShadowStyle.from_dict(_safe_mapping(payload.get("shadow"))),
             stroke=StrokeStyle.from_dict(_safe_mapping(payload.get("stroke"))),
+        ).normalized()
+
+
+@dataclass(frozen=True, slots=True)
+class WatermarkConfig:
+    source_type: str = "text"
+    text: str = "Marca de agua"
+    image_path: str = ""
+    show_detected_number: bool = False
+    opacity: int = 45
+    scale_percent: int = 18
+    position: str = "bottom_right"
+    margin_ratio: float = 0.04
+    vertical_offset: int = 0
+
+    def normalized(self) -> WatermarkConfig:
+        source_type = self.source_type if self.source_type in WATERMARK_SOURCE_TYPES else "text"
+        position = self.position if self.position in OVERLAY_POSITIONS else "bottom_right"
+        text = str(self.text).strip()
+        image_path = str(self.image_path).strip()
+        return replace(
+            self,
+            source_type=source_type,
+            text=text,
+            image_path=image_path,
+            show_detected_number=bool(self.show_detected_number),
+            opacity=_clamp_int(self.opacity, 0, 100),
+            scale_percent=_clamp_int(self.scale_percent, 5, 60),
+            position=position,
+            margin_ratio=min(max(float(self.margin_ratio), 0.0), 0.3),
+            vertical_offset=_clamp_int(self.vertical_offset, -400, 400),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self.normalized())
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> WatermarkConfig:
+        payload = data or {}
+        return cls(
+            source_type=str(payload.get("source_type", "text")),
+            text=str(payload.get("text", "Marca de agua")),
+            image_path=str(payload.get("image_path", "")),
+            show_detected_number=bool(payload.get("show_detected_number", False)),
+            opacity=int(payload.get("opacity", 45)),
+            scale_percent=int(payload.get("scale_percent", 18)),
+            position=str(payload.get("position", "bottom_right")),
+            margin_ratio=float(payload.get("margin_ratio", 0.04)),
+            vertical_offset=int(payload.get("vertical_offset", 0)),
         ).normalized()
 
 
@@ -172,17 +240,22 @@ class OverlayPreset:
     preset_id: str
     name: str
     built_in: bool
+    mode: str = "exif"
     fields: OverlayFieldConfig = field(default_factory=OverlayFieldConfig)
     style: OverlayStyle = field(default_factory=OverlayStyle)
+    watermark: WatermarkConfig = field(default_factory=WatermarkConfig)
 
     def normalized(self) -> OverlayPreset:
+        mode = self.mode if self.mode in OVERLAY_MODES else "exif"
         return replace(
             self,
             preset_id=str(self.preset_id),
             name=str(self.name),
             built_in=bool(self.built_in),
+            mode=mode,
             fields=self.fields.normalized(),
             style=self.style.normalized(),
+            watermark=self.watermark.normalized(),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -191,8 +264,10 @@ class OverlayPreset:
             "preset_id": preset.preset_id,
             "name": preset.name,
             "built_in": preset.built_in,
+            "mode": preset.mode,
             "fields": preset.fields.to_dict(),
             "style": preset.style.to_dict(),
+            "watermark": preset.watermark.to_dict(),
         }
 
     @classmethod
@@ -202,8 +277,10 @@ class OverlayPreset:
             preset_id=str(payload.get("preset_id", "")),
             name=str(payload.get("name", "")),
             built_in=bool(payload.get("built_in", False)),
+            mode=str(payload.get("mode", "exif")),
             fields=OverlayFieldConfig.from_dict(_safe_mapping(payload.get("fields"))),
             style=OverlayStyle.from_dict(_safe_mapping(payload.get("style"))),
+            watermark=WatermarkConfig.from_dict(_safe_mapping(payload.get("watermark"))),
         ).normalized()
 
 
@@ -219,26 +296,39 @@ def get_builtin_presets() -> list[OverlayPreset]:
             preset_id="builtin_classic",
             name="Clasico EXIF",
             built_in=True,
+            mode="exif",
             fields=OverlayFieldConfig(separator="  |  "),
             style=OverlayStyle(
                 font_family="Arial",
                 font_size_mode="auto",
                 font_size=36,
                 text_color="#ffdc5a",
+                position="bottom_center",
                 shadow=ShadowStyle(enabled=True, color="#000000", opacity=55, offset_x=3, offset_y=3),
                 stroke=StrokeStyle(enabled=True, color="#141414", opacity=100, width=2),
+            ),
+            watermark=WatermarkConfig(
+                source_type="text",
+                text="Marca de agua",
+                opacity=45,
+                scale_percent=18,
+                position="bottom_right",
+                margin_ratio=0.04,
+                vertical_offset=0,
             ),
         ),
         OverlayPreset(
             preset_id="builtin_clean",
             name="Blanco limpio",
             built_in=True,
+            mode="exif",
             fields=OverlayFieldConfig(separator="  |  "),
             style=OverlayStyle(
                 font_family="Arial",
                 font_size_mode="auto",
                 font_size=36,
                 text_color="#ffffff",
+                position="bottom_center",
                 shadow=ShadowStyle(enabled=True, color="#000000", opacity=40, offset_x=2, offset_y=2),
                 stroke=StrokeStyle(enabled=True, color="#000000", opacity=70, width=2),
             ),
@@ -247,12 +337,14 @@ def get_builtin_presets() -> list[OverlayPreset]:
             preset_id="builtin_cinema",
             name="Cine discreto",
             built_in=True,
+            mode="exif",
             fields=OverlayFieldConfig(separator=" · "),
             style=OverlayStyle(
                 font_family="Arial",
                 font_size_mode="auto",
                 font_size=36,
                 text_color="#f2ede3",
+                position="bottom_center",
                 shadow=ShadowStyle(enabled=True, color="#000000", opacity=70, offset_x=4, offset_y=4),
                 stroke=StrokeStyle(enabled=False, color="#141414", opacity=100, width=0),
             ),

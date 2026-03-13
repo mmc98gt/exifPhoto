@@ -3,11 +3,12 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
+from unittest.mock import patch
 
 from PIL import Image
 
 from app.batch_service import BatchProgress, process_images
-from app.overlay_config import OverlayStyle, get_builtin_presets
+from app.overlay_config import OverlayPreset, OverlayStyle, WatermarkConfig, get_builtin_presets
 
 
 class ProcessImagesTests(unittest.TestCase):
@@ -32,8 +33,9 @@ class ProcessImagesTests(unittest.TestCase):
             self.assertEqual(progress_events[-1].current, 2)
             self.assertEqual(progress_events[-1].total, 2)
             self.assertEqual({event.image_name for event in progress_events}, {"one.jpg", "two.jpg"})
-            self.assertTrue((image_one.parent / "exportadas" / "one_exif.jpg").exists())
-            self.assertTrue((image_two.parent / "exportadas" / "two_exif.jpg").exists())
+            export_dir = _expected_export_dir(image_one.parent)
+            self.assertTrue((export_dir / "one_exif.jpg").exists())
+            self.assertTrue((export_dir / "two_exif.jpg").exists())
 
     def test_collects_failures_without_stopping_other_images(self) -> None:
         with temporary_test_dir() as temp_dir:
@@ -57,7 +59,7 @@ class ProcessImagesTests(unittest.TestCase):
             self.assertEqual(len(progress_events), 3)
             self.assertTrue(any("broken.jpg" in failure for failure in result.failures))
             self.assertTrue(any("missing.jpg" in failure for failure in result.failures))
-            self.assertTrue((valid_image.parent / "exportadas" / "valid_exif.jpg").exists())
+            self.assertTrue((_expected_export_dir(valid_image.parent) / "valid_exif.jpg").exists())
 
     def test_stops_submitting_new_images_after_cancellation(self) -> None:
         with temporary_test_dir() as temp_dir:
@@ -86,8 +88,9 @@ class ProcessImagesTests(unittest.TestCase):
             self.assertEqual(result.processed_count, 1)
             self.assertEqual(result.failures, [])
             self.assertEqual(len(progress_events), 1)
-            self.assertTrue((Path(temp_dir) / "exportadas" / "image_0_exif.jpg").exists())
-            self.assertFalse((Path(temp_dir) / "exportadas" / "image_1_exif.jpg").exists())
+            export_dir = _expected_export_dir(Path(temp_dir))
+            self.assertTrue((export_dir / "image_0_exif.jpg").exists())
+            self.assertFalse((export_dir / "image_1_exif.jpg").exists())
 
     def test_uses_snapshot_of_preset_passed_at_start(self) -> None:
         with temporary_test_dir() as temp_dir:
@@ -105,7 +108,26 @@ class ProcessImagesTests(unittest.TestCase):
             result = process_images([str(image_path)], preset=snapshot_preset, max_workers=1)
 
             self.assertEqual(result.processed_count, 1)
-            self.assertTrue((Path(temp_dir) / "exportadas" / "snapshot_exif.jpg").exists())
+            self.assertTrue((_expected_export_dir(Path(temp_dir)) / "snapshot_exif.jpg").exists())
+
+    def test_skips_exif_extraction_for_watermark_mode(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "watermark.jpg"
+            Image.new("RGB", (240, 120), "white").save(image_path, format="JPEG")
+            preset = OverlayPreset(
+                preset_id="wm",
+                name="Watermark",
+                built_in=False,
+                mode="watermark",
+                style=OverlayStyle.from_dict({**get_builtin_presets()[0].style.to_dict(), "font_size_mode": "manual", "font_size": 28}),
+                watermark=WatermarkConfig(source_type="text", text="Brand", opacity=60, position="bottom_right"),
+            )
+
+            with patch("app.batch_service.extract_display_data", side_effect=AssertionError("No deberia leer EXIF")):
+                result = process_images([str(image_path)], preset=preset, max_workers=1)
+
+            self.assertEqual(result.processed_count, 1)
+            self.assertTrue((_expected_export_dir(Path(temp_dir)) / "watermark_watermark.jpg").exists())
 
 
 @contextmanager
@@ -114,6 +136,10 @@ def temporary_test_dir():
     temp_root.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=temp_root) as temp_dir:
         yield temp_dir
+
+
+def _expected_export_dir(source_dir: Path) -> Path:
+    return source_dir.parent / f"{source_dir.name}_exportadas"
 
 
 if __name__ == "__main__":

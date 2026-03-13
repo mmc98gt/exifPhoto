@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.ui import collect_supported_images_from_folder, normalize_paths
+from app.ui import _format_destination_text, collect_supported_images_from_folder, normalize_paths
 
 
 class UiHelperTests(unittest.TestCase):
@@ -59,6 +59,17 @@ class UiHelperTests(unittest.TestCase):
         with temporary_test_dir() as temp_dir:
             missing = Path(temp_dir) / "missing"
             self.assertEqual(collect_supported_images_from_folder(str(missing)), [])
+
+    def test_format_destination_text_uses_root_folder_name_with_export_suffix(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            source_dir = Path(temp_dir) / "partido_01"
+            source_dir.mkdir()
+            image_path = source_dir / "foto.jpg"
+            image_path.write_bytes(b"jpg")
+
+            destination_text = _format_destination_text([str(image_path.resolve())])
+
+            self.assertEqual(destination_text, f"Salida: {source_dir.parent / 'partido_01_exportadas'}")
 
 
 def temporary_test_dir():

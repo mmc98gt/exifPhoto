@@ -40,8 +40,8 @@ def process_image(
     preset: OverlayPreset | None = None,
     output_subfolder: str = "exportadas",
 ) -> str:
-    exif_data = extract_display_data(image_path)
     active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
+    exif_data = extract_display_data(image_path) if active_preset.mode == "exif" else None
     return create_annotated_copy(image_path, exif_data, active_preset, output_subfolder=output_subfolder)
 
 

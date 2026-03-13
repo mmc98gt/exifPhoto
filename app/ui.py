@@ -11,7 +11,7 @@ from PIL import Image, ImageTk
 from app.batch_service import BatchProcessingResult, BatchProgress, process_images as process_images_batch
 from app.exif_service import extract_display_data
 from app.image_service import render_overlay
-from app.overlay_config import FONT_FAMILIES, OverlayFieldConfig, OverlayPreset, OverlayStyle, ShadowStyle, StrokeStyle, clone_preset, get_builtin_presets
+from app.overlay_config import FONT_FAMILIES, OverlayFieldConfig, OverlayPreset, OverlayStyle, ShadowStyle, StrokeStyle, WatermarkConfig, clone_preset, get_builtin_presets
 from app.preset_store import PresetStoreData, load_preset_store, save_preset_store
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -31,6 +31,25 @@ PREVIEW_FRAME_BG = "#f7f1e8"
 PREVIEW_BG = "#ece4d7"
 PREVIEW_DEBOUNCE_MS = 150
 PREVIEW_SIZE = (420, 420)
+MODE_LABEL_TO_ID = {
+    "EXIF": "exif",
+    "Marca de agua": "watermark",
+}
+MODE_ID_TO_LABEL = {value: key for key, value in MODE_LABEL_TO_ID.items()}
+WATERMARK_SOURCE_LABEL_TO_ID = {
+    "Texto": "text",
+    "Imagen": "image",
+}
+WATERMARK_SOURCE_ID_TO_LABEL = {value: key for key, value in WATERMARK_SOURCE_LABEL_TO_ID.items()}
+POSITION_LABEL_TO_ID = {
+    "Abajo centro": "bottom_center",
+    "Abajo izquierda": "bottom_left",
+    "Abajo derecha": "bottom_right",
+    "Arriba izquierda": "top_left",
+    "Arriba derecha": "top_right",
+    "Centro": "center",
+}
+POSITION_ID_TO_LABEL = {value: key for key, value in POSITION_LABEL_TO_ID.items()}
 
 
 class ExifOverlayApp:
@@ -50,6 +69,7 @@ class ExifOverlayApp:
         self._builtin_presets = get_builtin_presets()
         self._preset_store = load_preset_store()
         self._user_presets = self._preset_store.user_presets
+        self._shared_watermark_image_path = self._preset_store.last_watermark_image_path
         self._presets_by_id = _build_presets_by_id(self._builtin_presets, self._user_presets)
         self._selected_preset_id = _resolve_selected_preset_id(self._preset_store, self._presets_by_id)
         self._draft_preset = clone_preset(self._presets_by_id[self._selected_preset_id])
@@ -57,7 +77,7 @@ class ExifOverlayApp:
 
         self.selection_var = tk.StringVar(value="No has seleccionado imagenes.")
         self.selection_count_var = tk.StringVar(value="0 imagenes")
-        self.destination_var = tk.StringVar(value="Salida: subcarpeta exportadas junto al archivo original.")
+        self.destination_var = tk.StringVar(value="Salida: carpeta hermana con el nombre de la carpeta origen mas _exportadas.")
         self.progress_text_var = tk.StringVar(value="0 de 0")
         self.progress_percent_var = tk.StringVar(value="0%")
         self.progress_var = tk.DoubleVar(value=0.0)
@@ -71,9 +91,19 @@ class ExifOverlayApp:
         self.preview_items_var = tk.StringVar(value=("Todavia no hay archivos en el lote.",))
 
         self.preset_var = tk.StringVar()
+        self.overlay_mode_var = tk.StringVar()
+        self.watermark_source_var = tk.StringVar()
+        self.watermark_text_var = tk.StringVar(value="Marca de agua")
+        self.watermark_image_path_var = tk.StringVar()
+        self.watermark_show_detected_number_var = tk.BooleanVar(value=False)
+        self.watermark_position_var = tk.StringVar()
+        self.watermark_opacity_var = tk.IntVar(value=45)
+        self.watermark_scale_var = tk.IntVar(value=18)
+        self.watermark_vertical_offset_var = tk.IntVar(value=0)
         self.font_family_var = tk.StringVar()
         self.font_size_mode_var = tk.StringVar()
         self.font_size_var = tk.IntVar(value=36)
+        self.exif_vertical_offset_var = tk.IntVar(value=0)
         self.text_color_var = tk.StringVar()
         self.shadow_enabled_var = tk.BooleanVar(value=True)
         self.shadow_color_var = tk.StringVar()
@@ -223,7 +253,7 @@ class ExifOverlayApp:
 
         ttk.Label(
             actions_panel,
-            text="La exportacion se guarda en una carpeta exportadas dentro de la ruta original de cada imagen.",
+            text="La exportacion se guarda en una carpeta hermana con el nombre de la carpeta origen mas _exportadas.",
             style="PanelBody.TLabel",
         ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(14, 0))
 
@@ -346,7 +376,7 @@ class ExifOverlayApp:
         editor_panel.columnconfigure(0, weight=1)
 
         ttk.Label(editor_panel, text="Editor del overlay", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(editor_panel, text="Fuente, color, sombra, borde, campos visibles y presets persistentes por usuario.", style="PanelBody.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(6, 14))
+        ttk.Label(editor_panel, text="Modo EXIF o marca de agua con texto o imagen, usando los mismos presets persistentes.", style="PanelBody.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(6, 14))
 
         preset_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
         preset_frame.grid(row=2, column=0, sticky="ew")
@@ -372,8 +402,76 @@ class ExifOverlayApp:
         ttk.Button(save_frame, text="Guardar U2", command=lambda: self.save_to_user_preset(1), style="Action.TButton").grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=(6, 0))
         ttk.Button(save_frame, text="Guardar U3", command=lambda: self.save_to_user_preset(2), style="Action.TButton").grid(row=1, column=2, sticky="ew", pady=(6, 0))
 
+        mode_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        mode_frame.grid(row=4, column=0, sticky="ew", pady=(18, 0))
+        mode_frame.columnconfigure(1, weight=1)
+        ttk.Label(mode_frame, text="Modo", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
+        self.mode_combo = ttk.Combobox(mode_frame, textvariable=self.overlay_mode_var, state="readonly", values=list(MODE_LABEL_TO_ID.keys()))
+        self.mode_combo.grid(row=0, column=1, sticky="ew")
+        ttk.Label(mode_frame, text="EXIF renderiza los datos de la foto. Marca de agua usa texto o una imagen independiente.", style="Micro.TLabel", wraplength=320).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+
+        watermark_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        watermark_frame.grid(row=5, column=0, sticky="ew", pady=(18, 0))
+        watermark_frame.columnconfigure(1, weight=1)
+        ttk.Label(watermark_frame, text="Marca de agua", style="EditorLabel.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(watermark_frame, text="Texto usa la tipografia, color, sombra y borde de abajo. Imagen usa el archivo seleccionado.", style="Micro.TLabel", wraplength=320).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 10))
+        ttk.Label(watermark_frame, text="Tipo", style="EditorLabel.TLabel").grid(row=2, column=0, sticky="w")
+        self.watermark_source_combo = ttk.Combobox(
+            watermark_frame,
+            textvariable=self.watermark_source_var,
+            state="readonly",
+            values=list(WATERMARK_SOURCE_LABEL_TO_ID.keys()),
+        )
+        self.watermark_source_combo.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Label(watermark_frame, text="Texto", style="EditorLabel.TLabel").grid(row=3, column=0, sticky="w")
+        self.watermark_text_entry = ttk.Entry(watermark_frame, textvariable=self.watermark_text_var)
+        self.watermark_text_entry.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Label(watermark_frame, text="Imagen", style="EditorLabel.TLabel").grid(row=4, column=0, sticky="w")
+        self.watermark_image_entry = ttk.Entry(watermark_frame, textvariable=self.watermark_image_path_var, state="readonly")
+        self.watermark_image_entry.grid(row=4, column=1, sticky="ew", pady=(0, 6))
+        self.watermark_image_button = ttk.Button(watermark_frame, text="Buscar", command=self.select_watermark_image, style="Action.TButton")
+        self.watermark_image_button.grid(row=4, column=2, sticky="ew", padx=(8, 0), pady=(0, 6))
+        self.watermark_detect_number_check = ttk.Checkbutton(
+            watermark_frame,
+            text="Detectar numero del archivo y ponerlo debajo",
+            variable=self.watermark_show_detected_number_var,
+            style="Editor.TCheckbutton",
+        )
+        self.watermark_detect_number_check.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(watermark_frame, text="Usa regex sobre el nombre del archivo y toma el ultimo bloque numerico.", style="Micro.TLabel", wraplength=320).grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        ttk.Label(watermark_frame, text="Opacidad", style="EditorLabel.TLabel").grid(row=7, column=0, sticky="w", pady=(8, 0))
+        self.watermark_opacity_scale = ttk.Scale(watermark_frame, from_=0, to=100, orient="horizontal", variable=self.watermark_opacity_var)
+        self.watermark_opacity_scale.grid(row=7, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(watermark_frame, textvariable=self.watermark_opacity_var, style="Micro.TLabel").grid(row=7, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._bind_scale_reset(self.watermark_opacity_scale, "watermark_opacity")
+        ttk.Label(watermark_frame, text="Escala imagen (%)", style="EditorLabel.TLabel").grid(row=8, column=0, sticky="w", pady=(8, 0))
+        self.watermark_scale_scale = ttk.Scale(watermark_frame, from_=5, to=60, orient="horizontal", variable=self.watermark_scale_var)
+        self.watermark_scale_scale.grid(row=8, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(watermark_frame, textvariable=self.watermark_scale_var, style="Micro.TLabel").grid(row=8, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._bind_scale_reset(self.watermark_scale_scale, "watermark_scale")
+        ttk.Label(watermark_frame, text="Posicion", style="EditorLabel.TLabel").grid(row=9, column=0, sticky="w", pady=(8, 0))
+        self.watermark_position_combo = ttk.Combobox(
+            watermark_frame,
+            textvariable=self.watermark_position_var,
+            state="readonly",
+            values=list(POSITION_LABEL_TO_ID.keys()),
+        )
+        self.watermark_position_combo.grid(row=9, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(watermark_frame, text="Ajuste vertical", style="EditorLabel.TLabel").grid(row=10, column=0, sticky="w", pady=(8, 0))
+        self.watermark_vertical_offset_scale = ttk.Scale(
+            watermark_frame,
+            from_=-200,
+            to=200,
+            orient="horizontal",
+            variable=self.watermark_vertical_offset_var,
+        )
+        self.watermark_vertical_offset_scale.grid(row=10, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(watermark_frame, textvariable=self.watermark_vertical_offset_var, style="Micro.TLabel").grid(row=10, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._bind_scale_reset(self.watermark_vertical_offset_scale, "watermark_vertical_offset")
+        ttk.Label(watermark_frame, text="Negativo sube la marca; positivo la baja.", style="Micro.TLabel", wraplength=320).grid(row=11, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+
         typography = ttk.Frame(editor_panel, style="Surface.TFrame")
-        typography.grid(row=4, column=0, sticky="ew", pady=(18, 0))
+        typography.grid(row=6, column=0, sticky="ew", pady=(18, 0))
         typography.columnconfigure(1, weight=1)
         ttk.Label(typography, text="Fuente", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
         self.font_combo = ttk.Combobox(typography, textvariable=self.font_family_var, state="readonly", values=FONT_FAMILIES)
@@ -388,16 +486,17 @@ class ExifOverlayApp:
         self._bind_scale_reset(self.font_size_scale, "font_size")
 
         color_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
-        color_frame.grid(row=5, column=0, sticky="ew", pady=(18, 0))
+        color_frame.grid(row=7, column=0, sticky="ew", pady=(18, 0))
         color_frame.columnconfigure(1, weight=1)
         ttk.Label(color_frame, text="Color del texto", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
         self.text_color_button = self._create_color_button(color_frame, self.text_color_var, self.choose_text_color)
         self.text_color_button.grid(row=0, column=1, sticky="ew")
 
         shadow_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
-        shadow_frame.grid(row=6, column=0, sticky="ew", pady=(18, 0))
+        shadow_frame.grid(row=8, column=0, sticky="ew", pady=(18, 0))
         shadow_frame.columnconfigure(1, weight=1)
-        ttk.Checkbutton(shadow_frame, text="Sombra", variable=self.shadow_enabled_var, style="Editor.TCheckbutton").grid(row=0, column=0, sticky="w")
+        self.shadow_enabled_check = ttk.Checkbutton(shadow_frame, text="Sombra", variable=self.shadow_enabled_var, style="Editor.TCheckbutton")
+        self.shadow_enabled_check.grid(row=0, column=0, sticky="w")
         self.shadow_color_button = self._create_color_button(shadow_frame, self.shadow_color_var, self.choose_shadow_color)
         self.shadow_color_button.grid(row=0, column=1, sticky="ew")
         ttk.Label(shadow_frame, text="Opacidad", style="EditorLabel.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
@@ -417,9 +516,10 @@ class ExifOverlayApp:
         self._bind_scale_reset(self.shadow_offset_y_scale, "shadow_offset_y")
 
         stroke_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
-        stroke_frame.grid(row=7, column=0, sticky="ew", pady=(18, 0))
+        stroke_frame.grid(row=9, column=0, sticky="ew", pady=(18, 0))
         stroke_frame.columnconfigure(1, weight=1)
-        ttk.Checkbutton(stroke_frame, text="Borde / resalte", variable=self.stroke_enabled_var, style="Editor.TCheckbutton").grid(row=0, column=0, sticky="w")
+        self.stroke_enabled_check = ttk.Checkbutton(stroke_frame, text="Borde / resalte", variable=self.stroke_enabled_var, style="Editor.TCheckbutton")
+        self.stroke_enabled_check.grid(row=0, column=0, sticky="w")
         self.stroke_color_button = self._create_color_button(stroke_frame, self.stroke_color_var, self.choose_stroke_color)
         self.stroke_color_button.grid(row=0, column=1, sticky="ew")
         ttk.Label(stroke_frame, text="Opacidad", style="EditorLabel.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
@@ -434,16 +534,32 @@ class ExifOverlayApp:
         self._bind_scale_reset(self.stroke_width_scale, "stroke_width")
 
         field_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
-        field_frame.grid(row=8, column=0, sticky="ew", pady=(18, 0))
+        field_frame.grid(row=10, column=0, sticky="ew", pady=(18, 0))
         field_frame.columnconfigure(0, weight=1)
         field_frame.columnconfigure(1, weight=1)
         ttk.Label(field_frame, text="Campos EXIF visibles", style="EditorLabel.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(field_frame, text="Exposicion", variable=self.show_exposure_var, style="Editor.TCheckbutton").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(field_frame, text="ISO", variable=self.show_iso_var, style="Editor.TCheckbutton").grid(row=1, column=1, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(field_frame, text="Apertura", variable=self.show_aperture_var, style="Editor.TCheckbutton").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(field_frame, text="Focal", variable=self.show_focal_length_var, style="Editor.TCheckbutton").grid(row=2, column=1, sticky="w", pady=(6, 0))
+        self.show_exposure_check = ttk.Checkbutton(field_frame, text="Exposicion", variable=self.show_exposure_var, style="Editor.TCheckbutton")
+        self.show_exposure_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.show_iso_check = ttk.Checkbutton(field_frame, text="ISO", variable=self.show_iso_var, style="Editor.TCheckbutton")
+        self.show_iso_check.grid(row=1, column=1, sticky="w", pady=(6, 0))
+        self.show_aperture_check = ttk.Checkbutton(field_frame, text="Apertura", variable=self.show_aperture_var, style="Editor.TCheckbutton")
+        self.show_aperture_check.grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.show_focal_length_check = ttk.Checkbutton(field_frame, text="Focal", variable=self.show_focal_length_var, style="Editor.TCheckbutton")
+        self.show_focal_length_check.grid(row=2, column=1, sticky="w", pady=(6, 0))
         ttk.Label(field_frame, text="Separador", style="EditorLabel.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(field_frame, textvariable=self.separator_var).grid(row=3, column=1, sticky="ew", pady=(10, 0))
+        self.separator_entry = ttk.Entry(field_frame, textvariable=self.separator_var)
+        self.separator_entry.grid(row=3, column=1, sticky="ew", pady=(10, 0))
+        ttk.Label(field_frame, text="Ajuste vertical EXIF", style="EditorLabel.TLabel").grid(row=4, column=0, sticky="w", pady=(10, 0))
+        self.exif_vertical_offset_scale = ttk.Scale(
+            field_frame,
+            from_=-200,
+            to=200,
+            orient="horizontal",
+            variable=self.exif_vertical_offset_var,
+        )
+        self.exif_vertical_offset_scale.grid(row=4, column=1, sticky="ew", pady=(10, 0))
+        ttk.Label(field_frame, textvariable=self.exif_vertical_offset_var, style="Micro.TLabel").grid(row=4, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
+        self._bind_scale_reset(self.exif_vertical_offset_scale, "exif_vertical_offset")
 
     def _create_panel(self, parent: tk.Misc) -> tk.Frame:
         return tk.Frame(
@@ -473,9 +589,19 @@ class ExifOverlayApp:
 
     def _bind_control_changes(self) -> None:
         variables: list[tk.Variable] = [
+            self.overlay_mode_var,
+            self.watermark_source_var,
+            self.watermark_text_var,
+            self.watermark_image_path_var,
+            self.watermark_show_detected_number_var,
+            self.watermark_position_var,
+            self.watermark_opacity_var,
+            self.watermark_scale_var,
+            self.watermark_vertical_offset_var,
             self.font_family_var,
             self.font_size_mode_var,
             self.font_size_var,
+            self.exif_vertical_offset_var,
             self.text_color_var,
             self.shadow_enabled_var,
             self.shadow_color_var,
@@ -503,6 +629,10 @@ class ExifOverlayApp:
         preset = self._presets_by_id[self._selected_preset_id].normalized()
         reset_actions = {
             "font_size": lambda: self.font_size_var.set(preset.style.font_size),
+            "watermark_opacity": lambda: self.watermark_opacity_var.set(preset.watermark.opacity),
+            "watermark_scale": lambda: self.watermark_scale_var.set(preset.watermark.scale_percent),
+            "watermark_vertical_offset": lambda: self.watermark_vertical_offset_var.set(preset.watermark.vertical_offset),
+            "exif_vertical_offset": lambda: self.exif_vertical_offset_var.set(preset.style.vertical_offset),
             "shadow_opacity": lambda: self.shadow_opacity_var.set(preset.style.shadow.opacity),
             "shadow_offset_x": lambda: self.shadow_offset_x_var.set(preset.style.shadow.offset_x),
             "shadow_offset_y": lambda: self.shadow_offset_y_var.set(preset.style.shadow.offset_y),
@@ -537,7 +667,7 @@ class ExifOverlayApp:
         self._draft_preset = clone_preset(saved)
         self._sync_preset_combobox_values()
         self._load_preset_into_controls(self._draft_preset)
-        save_preset_store(self._user_presets, self._selected_preset_id)
+        save_preset_store(self._user_presets, self._selected_preset_id, self._shared_watermark_image_path)
         self._set_status(f"Configuracion guardada en '{saved.name}'.", is_error=False, title="Preset guardado")
         self._schedule_preview_refresh()
 
@@ -549,6 +679,22 @@ class ExifOverlayApp:
 
     def choose_stroke_color(self) -> None:
         self._choose_color(self.stroke_color_var, "Color del borde")
+
+    def select_watermark_image(self) -> None:
+        file_path = filedialog.askopenfilename(
+            title="Selecciona una imagen para la marca de agua",
+            filetypes=[
+                ("Imagenes compatibles", "*.png *.jpg *.jpeg"),
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg *.jpeg"),
+            ],
+        )
+        if not file_path:
+            return
+
+        self._shared_watermark_image_path = str(Path(file_path).resolve())
+        self.watermark_image_path_var.set(self._shared_watermark_image_path)
+        save_preset_store(self._user_presets, self._selected_preset_id, self._shared_watermark_image_path)
 
     def _choose_color(self, variable: tk.StringVar, title: str) -> None:
         chosen_color = colorchooser.askcolor(color=variable.get(), title=title, parent=self.root)
@@ -565,7 +711,7 @@ class ExifOverlayApp:
         self._selected_preset_id = preset_id
         self._draft_preset = clone_preset(self._presets_by_id[preset_id])
         self._load_preset_into_controls(self._draft_preset)
-        save_preset_store(self._user_presets, self._selected_preset_id)
+        save_preset_store(self._user_presets, self._selected_preset_id, self._shared_watermark_image_path)
         self._set_status(f"Preset activo: {self._draft_preset.name}.", is_error=False, title="Preset cargado")
         self._schedule_preview_refresh()
 
@@ -584,6 +730,7 @@ class ExifOverlayApp:
             preset_id=base_preset.preset_id,
             name=base_preset.name,
             built_in=base_preset.built_in,
+            mode=_value_for_label(MODE_LABEL_TO_ID, self.overlay_mode_var.get(), "exif"),
             fields=OverlayFieldConfig(
                 show_exposure=self.show_exposure_var.get(),
                 show_iso=self.show_iso_var.get(),
@@ -596,6 +743,10 @@ class ExifOverlayApp:
                 font_size_mode=self.font_size_mode_var.get(),
                 font_size=int(round(self.font_size_var.get())),
                 text_color=self.text_color_var.get(),
+                position=base_preset.style.position,
+                bottom_padding_ratio=base_preset.style.bottom_padding_ratio,
+                side_padding_ratio=base_preset.style.side_padding_ratio,
+                vertical_offset=int(round(self.exif_vertical_offset_var.get())),
                 shadow=ShadowStyle(
                     enabled=self.shadow_enabled_var.get(),
                     color=self.shadow_color_var.get(),
@@ -610,15 +761,38 @@ class ExifOverlayApp:
                     width=int(round(self.stroke_width_var.get())),
                 ),
             ).normalized(),
+            watermark=WatermarkConfig(
+                source_type=_value_for_label(WATERMARK_SOURCE_LABEL_TO_ID, self.watermark_source_var.get(), "text"),
+                text=self.watermark_text_var.get(),
+                image_path=self._shared_watermark_image_path,
+                show_detected_number=self.watermark_show_detected_number_var.get(),
+                opacity=int(round(self.watermark_opacity_var.get())),
+                scale_percent=int(round(self.watermark_scale_var.get())),
+                position=_value_for_label(POSITION_LABEL_TO_ID, self.watermark_position_var.get(), "bottom_right"),
+                margin_ratio=base_preset.watermark.margin_ratio,
+                vertical_offset=int(round(self.watermark_vertical_offset_var.get())),
+            ).normalized(),
         )
 
     def _load_preset_into_controls(self, preset: OverlayPreset) -> None:
         self._syncing_controls = True
         normalized = preset.normalized()
         self.preset_var.set(_preset_label_for_preset(normalized))
+        self.overlay_mode_var.set(_label_for_value(MODE_ID_TO_LABEL, normalized.mode, "EXIF"))
+        self.watermark_source_var.set(_label_for_value(WATERMARK_SOURCE_ID_TO_LABEL, normalized.watermark.source_type, "Texto"))
+        self.watermark_text_var.set(normalized.watermark.text)
+        if not self._shared_watermark_image_path and normalized.watermark.image_path:
+            self._shared_watermark_image_path = normalized.watermark.image_path
+        self.watermark_image_path_var.set(self._shared_watermark_image_path)
+        self.watermark_show_detected_number_var.set(normalized.watermark.show_detected_number)
+        self.watermark_position_var.set(_label_for_value(POSITION_ID_TO_LABEL, normalized.watermark.position, "Abajo derecha"))
+        self.watermark_opacity_var.set(normalized.watermark.opacity)
+        self.watermark_scale_var.set(normalized.watermark.scale_percent)
+        self.watermark_vertical_offset_var.set(normalized.watermark.vertical_offset)
         self.font_family_var.set(normalized.style.font_family)
         self.font_size_mode_var.set(normalized.style.font_size_mode)
         self.font_size_var.set(normalized.style.font_size)
+        self.exif_vertical_offset_var.set(normalized.style.vertical_offset)
         self.text_color_var.set(normalized.style.text_color)
         self.shadow_enabled_var.set(normalized.style.shadow.enabled)
         self.shadow_color_var.set(normalized.style.shadow.color)
@@ -670,7 +844,7 @@ class ExifOverlayApp:
 
         preview_path = self.selected_paths[0]
         try:
-            exif_data = self._get_preview_exif_data(preview_path)
+            exif_data = self._get_preview_exif_data(preview_path) if self._draft_preset.mode == "exif" else None
             rendered = render_overlay(preview_path, exif_data, self._draft_preset, for_preview=True)
         except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
             self._show_preview_placeholder(f"No se pudo generar el preview.\n{exc}")
@@ -681,8 +855,9 @@ class ExifOverlayApp:
         self._preview_photo = ImageTk.PhotoImage(image)
         self.preview_label.config(image=self._preview_photo, text="")
         self.preview_caption_var.set(f"Preview de: {Path(preview_path).name}")
+        mode_label = "marca de agua" if self._draft_preset.mode == "watermark" else "overlay EXIF"
         self.preview_meta_var.set(
-            f"Resolucion del preview: {image.width}x{image.height}. El render final usa el mismo estilo sobre la imagen exportada."
+            f"Resolucion del preview: {image.width}x{image.height}. Vista actual en modo {mode_label}; el render final usa esta misma configuracion."
         )
 
     def _get_preview_exif_data(self, image_path: str) -> dict[str, str]:
@@ -969,12 +1144,18 @@ def _format_selection_count(selected_paths: list[str]) -> str:
 
 def _format_destination_text(selected_paths: list[str]) -> str:
     if not selected_paths:
-        return "Salida: subcarpeta exportadas junto al archivo original."
+        return "Salida: carpeta hermana con el nombre de la carpeta origen mas _exportadas."
 
-    parent_dirs = sorted({str(Path(path).resolve().parent) for path in selected_paths})
-    if len(parent_dirs) == 1:
-        return f"Salida: {parent_dirs[0]}\\exportadas"
-    return "Salida: subcarpeta exportadas en cada carpeta original."
+    export_dirs = sorted({_format_export_dir(Path(path).resolve().parent) for path in selected_paths})
+    if len(export_dirs) == 1:
+        return f"Salida: {export_dirs[0]}"
+    return "Salida: una carpeta hermana por origen con sufijo _exportadas."
+
+
+def _format_export_dir(source_dir: Path) -> str:
+    base_name = source_dir.name.strip() or "imagenes"
+    parent_dir = source_dir.parent if source_dir.parent != source_dir else source_dir
+    return str((parent_dir / f"{base_name}_exportadas").resolve())
 
 
 def _build_preview_items(selected_paths: list[str]) -> list[str]:
@@ -1022,10 +1203,18 @@ def _build_preset_label_to_id(builtin_presets: list[OverlayPreset], user_presets
 
 def _preset_label_for_preset(preset: OverlayPreset) -> str:
     prefix = "Fijo" if preset.built_in else "Usuario"
-    return f"{prefix} · {preset.name}"
+    return f"{prefix} - {preset.name}"
 
 
 def _resolve_selected_preset_id(store: PresetStoreData, presets_by_id: dict[str, OverlayPreset]) -> str:
     if store.last_selected_preset_id in presets_by_id:
         return store.last_selected_preset_id
     return "builtin_classic"
+
+
+def _label_for_value(mapping: dict[str, str], value: str, fallback: str) -> str:
+    return mapping.get(value, fallback)
+
+
+def _value_for_label(mapping: dict[str, str], label: str, fallback: str) -> str:
+    return mapping.get(label, fallback)
