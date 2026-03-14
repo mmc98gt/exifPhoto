@@ -100,20 +100,30 @@ class ExifOverlayApp:
         self.watermark_opacity_var = tk.IntVar(value=45)
         self.watermark_scale_var = tk.IntVar(value=18)
         self.watermark_vertical_offset_var = tk.IntVar(value=0)
+        self.watermark_opacity_display_var = tk.StringVar(value="45")
+        self.watermark_scale_display_var = tk.StringVar(value="18")
+        self.watermark_vertical_offset_display_var = tk.StringVar(value="0")
         self.font_family_var = tk.StringVar()
         self.font_size_mode_var = tk.StringVar()
         self.font_size_var = tk.IntVar(value=36)
+        self.font_size_display_var = tk.StringVar(value="36")
         self.exif_vertical_offset_var = tk.IntVar(value=0)
+        self.exif_vertical_offset_display_var = tk.StringVar(value="0")
         self.text_color_var = tk.StringVar()
         self.shadow_enabled_var = tk.BooleanVar(value=True)
         self.shadow_color_var = tk.StringVar()
         self.shadow_opacity_var = tk.IntVar(value=55)
         self.shadow_offset_x_var = tk.IntVar(value=3)
         self.shadow_offset_y_var = tk.IntVar(value=3)
+        self.shadow_opacity_display_var = tk.StringVar(value="55")
+        self.shadow_offset_x_display_var = tk.StringVar(value="3")
+        self.shadow_offset_y_display_var = tk.StringVar(value="3")
         self.stroke_enabled_var = tk.BooleanVar(value=True)
         self.stroke_color_var = tk.StringVar()
         self.stroke_opacity_var = tk.IntVar(value=100)
         self.stroke_width_var = tk.IntVar(value=2)
+        self.stroke_opacity_display_var = tk.StringVar(value="100")
+        self.stroke_width_display_var = tk.StringVar(value="2")
         self.show_exposure_var = tk.BooleanVar(value=True)
         self.show_iso_var = tk.BooleanVar(value=True)
         self.show_aperture_var = tk.BooleanVar(value=True)
@@ -124,8 +134,21 @@ class ExifOverlayApp:
         self._worker_thread: Thread | None = None
         self._cancel_event: Event | None = None
         self._close_requested = False
+        self._scale_display_bindings = [
+            (self.watermark_opacity_var, self.watermark_opacity_display_var),
+            (self.watermark_scale_var, self.watermark_scale_display_var),
+            (self.watermark_vertical_offset_var, self.watermark_vertical_offset_display_var),
+            (self.font_size_var, self.font_size_display_var),
+            (self.exif_vertical_offset_var, self.exif_vertical_offset_display_var),
+            (self.shadow_opacity_var, self.shadow_opacity_display_var),
+            (self.shadow_offset_x_var, self.shadow_offset_x_display_var),
+            (self.shadow_offset_y_var, self.shadow_offset_y_display_var),
+            (self.stroke_opacity_var, self.stroke_opacity_display_var),
+            (self.stroke_width_var, self.stroke_width_display_var),
+        ]
 
         self._configure_theme()
+        self._bind_scale_display_vars()
         self._build_ui()
         self._bind_control_changes()
         self._load_preset_into_controls(self._draft_preset)
@@ -373,12 +396,38 @@ class ExifOverlayApp:
     def _build_editor_panel(self, parent: ttk.Frame) -> None:
         editor_panel = self._create_panel(parent)
         editor_panel.grid(row=0, column=2, sticky="nsew")
+        editor_panel.rowconfigure(0, weight=1)
         editor_panel.columnconfigure(0, weight=1)
 
-        ttk.Label(editor_panel, text="Editor del overlay", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(editor_panel, text="Modo EXIF o marca de agua con texto o imagen, usando los mismos presets persistentes.", style="PanelBody.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(6, 14))
+        editor_canvas = tk.Canvas(
+            editor_panel,
+            bg=SURFACE_COLOR,
+            highlightthickness=0,
+            borderwidth=0,
+            relief="flat",
+        )
+        editor_canvas.grid(row=0, column=0, sticky="nsew")
+        editor_scrollbar = ttk.Scrollbar(editor_panel, orient="vertical", command=editor_canvas.yview)
+        editor_scrollbar.grid(row=0, column=1, sticky="ns", padx=(12, 0))
+        editor_canvas.configure(yscrollcommand=editor_scrollbar.set)
 
-        preset_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        editor_content = ttk.Frame(editor_canvas, style="Surface.TFrame")
+        editor_content.columnconfigure(0, weight=1)
+        editor_window = editor_canvas.create_window((0, 0), window=editor_content, anchor="nw")
+        editor_content.bind(
+            "<Configure>",
+            lambda _event: editor_canvas.configure(scrollregion=editor_canvas.bbox("all")),
+        )
+        editor_canvas.bind(
+            "<Configure>",
+            lambda event: editor_canvas.itemconfigure(editor_window, width=event.width),
+        )
+        self._bind_mousewheel_scroll(editor_canvas)
+
+        ttk.Label(editor_content, text="Editor del overlay", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(editor_content, text="Modo EXIF o marca de agua con texto o imagen, usando los mismos presets persistentes.", style="PanelBody.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(6, 14))
+
+        preset_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         preset_frame.grid(row=2, column=0, sticky="ew")
         preset_frame.columnconfigure(0, weight=1)
         ttk.Label(preset_frame, text="Preset activo", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
@@ -392,7 +441,7 @@ class ExifOverlayApp:
         self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
         ttk.Button(preset_frame, text="Restaurar preset", command=self.restore_selected_preset, style="Action.TButton").grid(row=2, column=0, sticky="ew")
 
-        save_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        save_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         save_frame.grid(row=3, column=0, sticky="ew", pady=(16, 0))
         save_frame.columnconfigure(0, weight=1)
         save_frame.columnconfigure(1, weight=1)
@@ -402,7 +451,7 @@ class ExifOverlayApp:
         ttk.Button(save_frame, text="Guardar U2", command=lambda: self.save_to_user_preset(1), style="Action.TButton").grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=(6, 0))
         ttk.Button(save_frame, text="Guardar U3", command=lambda: self.save_to_user_preset(2), style="Action.TButton").grid(row=1, column=2, sticky="ew", pady=(6, 0))
 
-        mode_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        mode_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         mode_frame.grid(row=4, column=0, sticky="ew", pady=(18, 0))
         mode_frame.columnconfigure(1, weight=1)
         ttk.Label(mode_frame, text="Modo", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
@@ -410,7 +459,7 @@ class ExifOverlayApp:
         self.mode_combo.grid(row=0, column=1, sticky="ew")
         ttk.Label(mode_frame, text="EXIF renderiza los datos de la foto. Marca de agua usa texto o una imagen independiente.", style="Micro.TLabel", wraplength=320).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
-        watermark_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        watermark_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         watermark_frame.grid(row=5, column=0, sticky="ew", pady=(18, 0))
         watermark_frame.columnconfigure(1, weight=1)
         ttk.Label(watermark_frame, text="Marca de agua", style="EditorLabel.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
@@ -442,13 +491,13 @@ class ExifOverlayApp:
         ttk.Label(watermark_frame, text="Opacidad", style="EditorLabel.TLabel").grid(row=7, column=0, sticky="w", pady=(8, 0))
         self.watermark_opacity_scale = ttk.Scale(watermark_frame, from_=0, to=100, orient="horizontal", variable=self.watermark_opacity_var)
         self.watermark_opacity_scale.grid(row=7, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(watermark_frame, textvariable=self.watermark_opacity_var, style="Micro.TLabel").grid(row=7, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.watermark_opacity_scale, "watermark_opacity")
+        ttk.Label(watermark_frame, textvariable=self.watermark_opacity_display_var, style="Micro.TLabel").grid(row=7, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.watermark_opacity_scale, self.watermark_opacity_var, self.watermark_opacity_display_var, "watermark_opacity")
         ttk.Label(watermark_frame, text="Escala imagen (%)", style="EditorLabel.TLabel").grid(row=8, column=0, sticky="w", pady=(8, 0))
         self.watermark_scale_scale = ttk.Scale(watermark_frame, from_=5, to=60, orient="horizontal", variable=self.watermark_scale_var)
         self.watermark_scale_scale.grid(row=8, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(watermark_frame, textvariable=self.watermark_scale_var, style="Micro.TLabel").grid(row=8, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.watermark_scale_scale, "watermark_scale")
+        ttk.Label(watermark_frame, textvariable=self.watermark_scale_display_var, style="Micro.TLabel").grid(row=8, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.watermark_scale_scale, self.watermark_scale_var, self.watermark_scale_display_var, "watermark_scale")
         ttk.Label(watermark_frame, text="Posicion", style="EditorLabel.TLabel").grid(row=9, column=0, sticky="w", pady=(8, 0))
         self.watermark_position_combo = ttk.Combobox(
             watermark_frame,
@@ -466,11 +515,11 @@ class ExifOverlayApp:
             variable=self.watermark_vertical_offset_var,
         )
         self.watermark_vertical_offset_scale.grid(row=10, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(watermark_frame, textvariable=self.watermark_vertical_offset_var, style="Micro.TLabel").grid(row=10, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.watermark_vertical_offset_scale, "watermark_vertical_offset")
+        ttk.Label(watermark_frame, textvariable=self.watermark_vertical_offset_display_var, style="Micro.TLabel").grid(row=10, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.watermark_vertical_offset_scale, self.watermark_vertical_offset_var, self.watermark_vertical_offset_display_var, "watermark_vertical_offset")
         ttk.Label(watermark_frame, text="Negativo sube la marca; positivo la baja.", style="Micro.TLabel", wraplength=320).grid(row=11, column=0, columnspan=3, sticky="ew", pady=(6, 0))
 
-        typography = ttk.Frame(editor_panel, style="Surface.TFrame")
+        typography = ttk.Frame(editor_content, style="Surface.TFrame")
         typography.grid(row=6, column=0, sticky="ew", pady=(18, 0))
         typography.columnconfigure(1, weight=1)
         ttk.Label(typography, text="Fuente", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
@@ -482,17 +531,17 @@ class ExifOverlayApp:
         ttk.Label(typography, text="Tamano manual", style="EditorLabel.TLabel").grid(row=2, column=0, sticky="w")
         self.font_size_scale = ttk.Scale(typography, from_=12, to=160, orient="horizontal", variable=self.font_size_var)
         self.font_size_scale.grid(row=2, column=1, sticky="ew")
-        ttk.Label(typography, textvariable=self.font_size_var, style="Micro.TLabel").grid(row=2, column=2, sticky="w", padx=(8, 0))
-        self._bind_scale_reset(self.font_size_scale, "font_size")
+        ttk.Label(typography, textvariable=self.font_size_display_var, style="Micro.TLabel").grid(row=2, column=2, sticky="w", padx=(8, 0))
+        self._configure_integer_scale(self.font_size_scale, self.font_size_var, self.font_size_display_var, "font_size")
 
-        color_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        color_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         color_frame.grid(row=7, column=0, sticky="ew", pady=(18, 0))
         color_frame.columnconfigure(1, weight=1)
         ttk.Label(color_frame, text="Color del texto", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
         self.text_color_button = self._create_color_button(color_frame, self.text_color_var, self.choose_text_color)
         self.text_color_button.grid(row=0, column=1, sticky="ew")
 
-        shadow_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        shadow_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         shadow_frame.grid(row=8, column=0, sticky="ew", pady=(18, 0))
         shadow_frame.columnconfigure(1, weight=1)
         self.shadow_enabled_check = ttk.Checkbutton(shadow_frame, text="Sombra", variable=self.shadow_enabled_var, style="Editor.TCheckbutton")
@@ -502,20 +551,20 @@ class ExifOverlayApp:
         ttk.Label(shadow_frame, text="Opacidad", style="EditorLabel.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.shadow_opacity_scale = ttk.Scale(shadow_frame, from_=0, to=100, orient="horizontal", variable=self.shadow_opacity_var)
         self.shadow_opacity_scale.grid(row=1, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(shadow_frame, textvariable=self.shadow_opacity_var, style="Micro.TLabel").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.shadow_opacity_scale, "shadow_opacity")
+        ttk.Label(shadow_frame, textvariable=self.shadow_opacity_display_var, style="Micro.TLabel").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.shadow_opacity_scale, self.shadow_opacity_var, self.shadow_opacity_display_var, "shadow_opacity")
         ttk.Label(shadow_frame, text="Offset X", style="EditorLabel.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.shadow_offset_x_scale = ttk.Scale(shadow_frame, from_=-20, to=20, orient="horizontal", variable=self.shadow_offset_x_var)
         self.shadow_offset_x_scale.grid(row=2, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(shadow_frame, textvariable=self.shadow_offset_x_var, style="Micro.TLabel").grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.shadow_offset_x_scale, "shadow_offset_x")
+        ttk.Label(shadow_frame, textvariable=self.shadow_offset_x_display_var, style="Micro.TLabel").grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.shadow_offset_x_scale, self.shadow_offset_x_var, self.shadow_offset_x_display_var, "shadow_offset_x")
         ttk.Label(shadow_frame, text="Offset Y", style="EditorLabel.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 0))
         self.shadow_offset_y_scale = ttk.Scale(shadow_frame, from_=-20, to=20, orient="horizontal", variable=self.shadow_offset_y_var)
         self.shadow_offset_y_scale.grid(row=3, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(shadow_frame, textvariable=self.shadow_offset_y_var, style="Micro.TLabel").grid(row=3, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.shadow_offset_y_scale, "shadow_offset_y")
+        ttk.Label(shadow_frame, textvariable=self.shadow_offset_y_display_var, style="Micro.TLabel").grid(row=3, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.shadow_offset_y_scale, self.shadow_offset_y_var, self.shadow_offset_y_display_var, "shadow_offset_y")
 
-        stroke_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        stroke_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         stroke_frame.grid(row=9, column=0, sticky="ew", pady=(18, 0))
         stroke_frame.columnconfigure(1, weight=1)
         self.stroke_enabled_check = ttk.Checkbutton(stroke_frame, text="Borde / resalte", variable=self.stroke_enabled_var, style="Editor.TCheckbutton")
@@ -525,15 +574,15 @@ class ExifOverlayApp:
         ttk.Label(stroke_frame, text="Opacidad", style="EditorLabel.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.stroke_opacity_scale = ttk.Scale(stroke_frame, from_=0, to=100, orient="horizontal", variable=self.stroke_opacity_var)
         self.stroke_opacity_scale.grid(row=1, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(stroke_frame, textvariable=self.stroke_opacity_var, style="Micro.TLabel").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.stroke_opacity_scale, "stroke_opacity")
+        ttk.Label(stroke_frame, textvariable=self.stroke_opacity_display_var, style="Micro.TLabel").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.stroke_opacity_scale, self.stroke_opacity_var, self.stroke_opacity_display_var, "stroke_opacity")
         ttk.Label(stroke_frame, text="Ancho", style="EditorLabel.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.stroke_width_scale = ttk.Scale(stroke_frame, from_=0, to=12, orient="horizontal", variable=self.stroke_width_var)
         self.stroke_width_scale.grid(row=2, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(stroke_frame, textvariable=self.stroke_width_var, style="Micro.TLabel").grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
-        self._bind_scale_reset(self.stroke_width_scale, "stroke_width")
+        ttk.Label(stroke_frame, textvariable=self.stroke_width_display_var, style="Micro.TLabel").grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        self._configure_integer_scale(self.stroke_width_scale, self.stroke_width_var, self.stroke_width_display_var, "stroke_width")
 
-        field_frame = ttk.Frame(editor_panel, style="Surface.TFrame")
+        field_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         field_frame.grid(row=10, column=0, sticky="ew", pady=(18, 0))
         field_frame.columnconfigure(0, weight=1)
         field_frame.columnconfigure(1, weight=1)
@@ -558,8 +607,8 @@ class ExifOverlayApp:
             variable=self.exif_vertical_offset_var,
         )
         self.exif_vertical_offset_scale.grid(row=4, column=1, sticky="ew", pady=(10, 0))
-        ttk.Label(field_frame, textvariable=self.exif_vertical_offset_var, style="Micro.TLabel").grid(row=4, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
-        self._bind_scale_reset(self.exif_vertical_offset_scale, "exif_vertical_offset")
+        ttk.Label(field_frame, textvariable=self.exif_vertical_offset_display_var, style="Micro.TLabel").grid(row=4, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
+        self._configure_integer_scale(self.exif_vertical_offset_scale, self.exif_vertical_offset_var, self.exif_vertical_offset_display_var, "exif_vertical_offset")
 
     def _create_panel(self, parent: tk.Misc) -> tk.Frame:
         return tk.Frame(
@@ -586,6 +635,52 @@ class ExifOverlayApp:
             font=("Segoe UI Semibold", 9),
             cursor="hand2",
         )
+
+    def _bind_mousewheel_scroll(self, canvas: tk.Canvas) -> None:
+        def _scroll(event: tk.Event) -> str | None:
+            delta = 0
+            if getattr(event, "delta", 0):
+                delta = -int(event.delta / 120)
+            elif getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+
+            if delta:
+                canvas.yview_scroll(delta, "units")
+                return "break"
+            return None
+
+        canvas.bind("<MouseWheel>", _scroll, add="+")
+        canvas.bind("<Button-4>", _scroll, add="+")
+        canvas.bind("<Button-5>", _scroll, add="+")
+
+    def _bind_scale_display_vars(self) -> None:
+        for variable, display_var in self._scale_display_bindings:
+            variable.trace_add(
+                "write",
+                lambda *_args, source_var=variable, target_var=display_var: self._sync_scale_display_var(source_var, target_var),
+            )
+            self._sync_scale_display_var(variable, display_var)
+
+    def _sync_scale_display_var(self, variable: tk.Variable, display_var: tk.StringVar) -> None:
+        display_var.set(_format_slider_value(variable.get()))
+
+    def _configure_integer_scale(
+        self,
+        scale: ttk.Scale,
+        variable: tk.IntVar,
+        display_var: tk.StringVar,
+        setting_name: str,
+    ) -> None:
+        def _round_scale_value(raw_value: str) -> None:
+            rounded = int(round(float(raw_value)))
+            if variable.get() != rounded:
+                variable.set(rounded)
+            display_var.set(str(rounded))
+
+        scale.configure(command=_round_scale_value)
+        self._bind_scale_reset(scale, setting_name)
 
     def _bind_control_changes(self) -> None:
         variables: list[tk.Variable] = [
@@ -1218,3 +1313,10 @@ def _label_for_value(mapping: dict[str, str], value: str, fallback: str) -> str:
 
 def _value_for_label(mapping: dict[str, str], label: str, fallback: str) -> str:
     return mapping.get(label, fallback)
+
+
+def _format_slider_value(value: object) -> str:
+    try:
+        return str(int(round(float(value))))
+    except (TypeError, ValueError):
+        return "0"

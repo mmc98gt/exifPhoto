@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.ui import _format_destination_text, collect_supported_images_from_folder, normalize_paths
+from app.ui import _format_destination_text, _format_slider_value, collect_supported_images_from_folder, normalize_paths
 
 
 class UiHelperTests(unittest.TestCase):
@@ -70,6 +70,11 @@ class UiHelperTests(unittest.TestCase):
             destination_text = _format_destination_text([str(image_path.resolve())])
 
             self.assertEqual(destination_text, f"Salida: {source_dir.parent / 'partido_01_exportadas'}")
+
+    def test_format_slider_value_rounds_and_strips_float_noise(self) -> None:
+        self.assertEqual(_format_slider_value("40.28077753779698"), "40")
+        self.assertEqual(_format_slider_value(100.0), "100")
+        self.assertEqual(_format_slider_value("-199.6"), "-200")
 
 
 def temporary_test_dir():
