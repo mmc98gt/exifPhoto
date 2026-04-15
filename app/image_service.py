@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from PIL import Image, ImageDraw, ImageFont, PngImagePlugin, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, PngImagePlugin, UnidentifiedImageError
 
 from app.overlay_config import FONT_FAMILY_TO_FILES, OverlayFieldConfig, OverlayPreset, OverlayStyle, WatermarkConfig, get_builtin_presets
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 MAX_OUTPUT_HEIGHT = 2160
+FRAME_4K_SIZE = (3840, 2160)
+FRAME_BACKGROUND_BLUR_RADIUS = 42
 PHOTO_NUMBER_REGEX = re.compile(r"(\d+)(?!.*\d)")
 
 
@@ -74,12 +76,63 @@ def create_annotated_copy(
     return str(output_path.resolve())
 
 
+def render_blurred_fill_frame(image_path: str) -> Image.Image:
+    path = Path(image_path)
+    _validate_input_path(path)
+
+    try:
+        with Image.open(path) as image:
+            save_as_png = path.suffix.lower() == ".png"
+            _configure_decoder(image, save_as_png=save_as_png)
+            prepared = _prepare_image(image, save_as_png=save_as_png)
+            return _render_blurred_frame(prepared)
+    except FileNotFoundError:
+        raise
+    except UnidentifiedImageError as exc:
+        raise ValueError("El archivo seleccionado no es una imagen valida.") from exc
+    except OSError as exc:
+        raise RuntimeError(f"No se pudo procesar la imagen: {exc}") from exc
+
+
+def create_blurred_frame_copy(
+    image_path: str,
+    exif_data: dict[str, str] | None = None,
+    preset: OverlayPreset | None = None,
+    output_subfolder: str = "exportadas_16x9_4k",
+) -> str:
+    path = Path(image_path)
+    _validate_input_path(path)
+    output_path = _get_output_path(path, output_subfolder, "frame_4k")
+    save_as_png = path.suffix.lower() == ".png"
+    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
+    overlayed_image = render_overlay(image_path, exif_data, active_preset)
+    framed_image = _render_blurred_frame(overlayed_image)
+    source_metadata = _extract_source_metadata(path, save_as_png=save_as_png)
+    _save_image(framed_image, output_path, save_as_png=save_as_png, metadata=source_metadata)
+    return str(output_path.resolve())
+
+
 def _render_prepared_image(base_image: Image.Image, exif_data: dict[str, str], preset: OverlayPreset, image_path: Path) -> Image.Image:
+    if preset.mode == "none":
+        return base_image.copy()
     if preset.mode == "watermark":
         return _draw_watermark(base_image, preset, image_path)
 
     overlay_text = build_overlay_text(exif_data, preset.fields)
     return _draw_overlay_text(base_image, overlay_text, preset.style)
+
+
+def _render_blurred_frame(base_image: Image.Image) -> Image.Image:
+    source = base_image.convert("RGBA")
+    background = ImageOps.fit(source, FRAME_4K_SIZE, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    background = background.filter(ImageFilter.GaussianBlur(radius=FRAME_BACKGROUND_BLUR_RADIUS))
+    foreground = ImageOps.contain(source, FRAME_4K_SIZE, method=Image.Resampling.LANCZOS)
+    offset_x = (FRAME_4K_SIZE[0] - foreground.width) // 2
+    offset_y = (FRAME_4K_SIZE[1] - foreground.height) // 2
+    background.alpha_composite(foreground, dest=(offset_x, offset_y))
+    if "A" in base_image.getbands():
+        return background
+    return background.convert(base_image.mode)
 
 
 def _validate_input_path(path: Path) -> None:
@@ -120,7 +173,14 @@ def _get_output_path(image_path: Path, output_subfolder: str, mode: str) -> Path
     output_dir.mkdir(parents=True, exist_ok=True)
 
     extension = ".png" if image_path.suffix.lower() == ".png" else ".jpg"
-    suffix = "_watermark" if mode == "watermark" else "_exif"
+    if mode == "watermark":
+        suffix = "_watermark"
+    elif mode == "none":
+        suffix = "_clean"
+    elif mode == "frame_4k":
+        suffix = "_16x9_4k"
+    else:
+        suffix = "_exif"
     base_name = f"{image_path.stem}{suffix}"
     candidate = output_dir / f"{base_name}{extension}"
 
@@ -264,7 +324,7 @@ def _draw_image_watermark(base_image: Image.Image, watermark: WatermarkConfig, s
     except OSError as exc:
         raise RuntimeError(f"No se pudo abrir la imagen de la marca de agua: {exc}") from exc
 
-    target_width = max(1, int(width * (watermark.scale_percent / 100)))
+    target_width = max(1, int(min(width, height) * (watermark.scale_percent / 100)))
     scale = target_width / max(1, watermark_rgba.width)
     target_height = max(1, int(watermark_rgba.height * scale))
     resized = watermark_rgba.resize((target_width, target_height), Image.Resampling.LANCZOS)

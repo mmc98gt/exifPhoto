@@ -8,7 +8,7 @@ from threading import Event
 from typing import Callable
 
 from app.exif_service import extract_display_data
-from app.image_service import create_annotated_copy
+from app.image_service import create_annotated_copy, create_blurred_frame_copy
 from app.overlay_config import OverlayPreset, get_builtin_presets
 
 
@@ -53,12 +53,55 @@ def process_images(
     progress_callback: Callable[[BatchProgress], None] | None = None,
     cancel_event: Event | None = None,
 ) -> BatchProcessingResult:
+    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
+
+    def image_processor(image_path: str) -> str:
+        return process_image(image_path, active_preset, output_subfolder)
+
+    return _process_images_with_handler(
+        image_paths=image_paths,
+        image_processor=image_processor,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )
+
+
+def process_images_to_16_9_frame(
+    image_paths: list[str],
+    preset: OverlayPreset | None = None,
+    output_subfolder: str = "exportadas_16x9_4k",
+    max_workers: int | None = None,
+    progress_callback: Callable[[BatchProgress], None] | None = None,
+    cancel_event: Event | None = None,
+) -> BatchProcessingResult:
+    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
+
+    def image_processor(image_path: str) -> str:
+        exif_data = extract_display_data(image_path) if active_preset.mode == "exif" else None
+        return create_blurred_frame_copy(image_path, exif_data, active_preset, output_subfolder=output_subfolder)
+
+    return _process_images_with_handler(
+        image_paths=image_paths,
+        image_processor=image_processor,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )
+
+
+def _process_images_with_handler(
+    image_paths: list[str],
+    image_processor: Callable[[str], str],
+    max_workers: int | None = None,
+    progress_callback: Callable[[BatchProgress], None] | None = None,
+    cancel_event: Event | None = None,
+) -> BatchProcessingResult:
     if not image_paths:
         return BatchProcessingResult(processed_count=0, failures=[])
 
     total_images = len(image_paths)
     worker_count = _resolve_worker_count(total_images, max_workers)
-    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
     processed_count = 0
     failures: list[str] = []
     completed_count = 0
@@ -76,7 +119,7 @@ def process_images(
             image_path = next(pending_paths, None)
             if image_path is None:
                 break
-            future = executor.submit(process_image, image_path, active_preset, output_subfolder)
+            future = executor.submit(image_processor, image_path)
             active_futures[future] = image_path
 
         while active_futures:
@@ -108,7 +151,7 @@ def process_images(
 
                 next_path = next(pending_paths, None)
                 if next_path is not None:
-                    next_future = executor.submit(process_image, next_path, active_preset, output_subfolder)
+                    next_future = executor.submit(image_processor, next_path)
                     active_futures[next_future] = next_path
 
             if cancelled:

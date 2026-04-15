@@ -46,6 +46,16 @@ class OverlayConfigTests(unittest.TestCase):
 
         self.assertEqual(restored, preset.normalized())
 
+    def test_accepts_none_mode_in_preset_normalization(self) -> None:
+        preset = OverlayPreset(
+            preset_id="plain",
+            name="Plain",
+            built_in=False,
+            mode="none",
+        ).normalized()
+
+        self.assertEqual(preset.mode, "none")
+
     def test_normalizes_invalid_style_values(self) -> None:
         style = OverlayStyle(
             font_family="Unknown",

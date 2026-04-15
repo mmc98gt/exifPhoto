@@ -12,7 +12,7 @@ FONT_FAMILIES = tuple(FONT_FAMILY_TO_FILES)
 MIN_FONT_SIZE = 12
 MAX_FONT_SIZE = 160
 DEFAULT_SEPARATOR = "  |  "
-OVERLAY_MODES = ("exif", "watermark")
+OVERLAY_MODES = ("exif", "watermark", "none")
 WATERMARK_SOURCE_TYPES = ("text", "image")
 OVERLAY_POSITIONS = (
     "bottom_center",

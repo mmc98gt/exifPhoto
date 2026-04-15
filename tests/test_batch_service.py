@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app.batch_service import BatchProgress, process_images
-from app.overlay_config import OverlayPreset, OverlayStyle, WatermarkConfig, get_builtin_presets
+from app.batch_service import BatchProgress, process_images, process_images_to_16_9_frame
+from app.overlay_config import OverlayPreset, OverlayStyle, ShadowStyle, StrokeStyle, WatermarkConfig, get_builtin_presets
 
 
 class ProcessImagesTests(unittest.TestCase):
@@ -129,6 +129,48 @@ class ProcessImagesTests(unittest.TestCase):
             self.assertEqual(result.processed_count, 1)
             self.assertTrue((_expected_export_dir(Path(temp_dir)) / "watermark_watermark.jpg").exists())
 
+    def test_process_images_to_16_9_frame_uses_selected_exif_preset(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "frame.jpg"
+            Image.new("RGB", (800, 1200), "white").save(image_path, format="JPEG")
+            preset = OverlayPreset(
+                preset_id="frame_exif",
+                name="Frame EXIF",
+                built_in=False,
+                mode="exif",
+                style=OverlayStyle(
+                    font_family="Arial",
+                    font_size_mode="manual",
+                    font_size=80,
+                    text_color="#000000",
+                    shadow=ShadowStyle(enabled=False, color="#000000", opacity=0, offset_x=0, offset_y=0),
+                    stroke=StrokeStyle(enabled=False, color="#000000", opacity=0, width=0),
+                ),
+            )
+
+            with patch("app.batch_service.extract_display_data", return_value=_sample_data()):
+                result = process_images_to_16_9_frame([str(image_path)], preset=preset, max_workers=1)
+
+            self.assertEqual(result.processed_count, 1)
+            self.assertTrue((_expected_export_dir_16_9(Path(temp_dir)) / "frame_16x9_4k.jpg").exists())
+
+    def test_process_images_to_16_9_frame_skips_exif_for_none_mode(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "plain.jpg"
+            Image.new("RGB", (800, 1200), "white").save(image_path, format="JPEG")
+            preset = OverlayPreset(
+                preset_id="frame_none",
+                name="Frame none",
+                built_in=False,
+                mode="none",
+            )
+
+            with patch("app.batch_service.extract_display_data", side_effect=AssertionError("No deberia leer EXIF")):
+                result = process_images_to_16_9_frame([str(image_path)], preset=preset, max_workers=1)
+
+            self.assertEqual(result.processed_count, 1)
+            self.assertTrue((_expected_export_dir_16_9(Path(temp_dir)) / "plain_16x9_4k.jpg").exists())
+
 
 @contextmanager
 def temporary_test_dir():
@@ -140,6 +182,19 @@ def temporary_test_dir():
 
 def _expected_export_dir(source_dir: Path) -> Path:
     return source_dir.parent / f"{source_dir.name}_exportadas"
+
+
+def _expected_export_dir_16_9(source_dir: Path) -> Path:
+    return source_dir.parent / f"{source_dir.name}_exportadas_16x9_4k"
+
+
+def _sample_data() -> dict[str, str]:
+    return {
+        "exposure": "1/250 s",
+        "iso": "ISO 400",
+        "aperture": "f/2.8",
+        "focal_length": "50 mm",
+    }
 
 
 if __name__ == "__main__":

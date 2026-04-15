@@ -8,7 +8,7 @@ from tkinter import colorchooser, filedialog, ttk
 
 from PIL import Image, ImageTk
 
-from app.batch_service import BatchProcessingResult, BatchProgress, process_images as process_images_batch
+from app.batch_service import BatchProcessingResult, BatchProgress, process_images as process_images_batch, process_images_to_16_9_frame as process_images_16_9_batch
 from app.exif_service import extract_display_data
 from app.image_service import render_overlay
 from app.overlay_config import FONT_FAMILIES, OverlayFieldConfig, OverlayPreset, OverlayStyle, ShadowStyle, StrokeStyle, WatermarkConfig, clone_preset, get_builtin_presets
@@ -34,6 +34,7 @@ PREVIEW_SIZE = (420, 420)
 MODE_LABEL_TO_ID = {
     "EXIF": "exif",
     "Marca de agua": "watermark",
+    "Nada": "none",
 }
 MODE_ID_TO_LABEL = {value: key for key, value in MODE_LABEL_TO_ID.items()}
 WATERMARK_SOURCE_LABEL_TO_ID = {
@@ -218,7 +219,7 @@ class ExifOverlayApp:
         ttk.Label(header, text="EXIF Overlay Studio", style="HeaderTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="Preview en vivo de la primera foto, presets persistentes y exportacion con el mismo motor de render.",
+            text="Preview en vivo de la primera foto, presets persistentes, exportacion EXIF/marca de agua y version 16:9 4K con fondo desenfocado.",
             style="HeaderSubtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
@@ -239,6 +240,7 @@ class ExifOverlayApp:
         actions_panel.columnconfigure(1, weight=1)
         actions_panel.columnconfigure(2, weight=1)
         actions_panel.columnconfigure(3, weight=1)
+        actions_panel.columnconfigure(4, weight=1)
 
         self.select_files_button = ttk.Button(
             actions_panel,
@@ -265,6 +267,15 @@ class ExifOverlayApp:
         )
         self.process_button.grid(row=0, column=2, sticky="ew", padx=(0, 10))
 
+        self.frame_4k_button = ttk.Button(
+            actions_panel,
+            text="Generar 16:9 4K",
+            command=self.process_images_16_9,
+            state="disabled",
+            style="Accent.TButton",
+        )
+        self.frame_4k_button.grid(row=0, column=3, sticky="ew", padx=(0, 10))
+
         self.stop_button = ttk.Button(
             actions_panel,
             text="Parar",
@@ -272,13 +283,13 @@ class ExifOverlayApp:
             state="disabled",
             style="Stop.TButton",
         )
-        self.stop_button.grid(row=0, column=3, sticky="ew")
+        self.stop_button.grid(row=0, column=4, sticky="ew")
 
         ttk.Label(
             actions_panel,
-            text="La exportacion se guarda en una carpeta hermana con el nombre de la carpeta origen mas _exportadas.",
+            text="Exportar lote guarda en _exportadas. Generar 16:9 4K crea una carpeta hermana terminada en _exportadas_16x9_4k.",
             style="PanelBody.TLabel",
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(14, 0))
+        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(14, 0))
 
         content = ttk.Frame(container, style="App.TFrame")
         content.grid(row=2, column=0, sticky="nsew")
@@ -425,7 +436,7 @@ class ExifOverlayApp:
         self._bind_mousewheel_scroll(editor_canvas)
 
         ttk.Label(editor_content, text="Editor del overlay", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(editor_content, text="Modo EXIF o marca de agua con texto o imagen, usando los mismos presets persistentes.", style="PanelBody.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(6, 14))
+        ttk.Label(editor_content, text="Modo EXIF, marca de agua o nada, usando los mismos presets persistentes.", style="PanelBody.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(6, 14))
 
         preset_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         preset_frame.grid(row=2, column=0, sticky="ew")
@@ -457,7 +468,7 @@ class ExifOverlayApp:
         ttk.Label(mode_frame, text="Modo", style="EditorLabel.TLabel").grid(row=0, column=0, sticky="w")
         self.mode_combo = ttk.Combobox(mode_frame, textvariable=self.overlay_mode_var, state="readonly", values=list(MODE_LABEL_TO_ID.keys()))
         self.mode_combo.grid(row=0, column=1, sticky="ew")
-        ttk.Label(mode_frame, text="EXIF renderiza los datos de la foto. Marca de agua usa texto o una imagen independiente.", style="Micro.TLabel", wraplength=320).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(mode_frame, text="EXIF renderiza los datos de la foto. Marca de agua usa texto o imagen. Nada exporta la foto sin overlay.", style="Micro.TLabel", wraplength=320).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         watermark_frame = ttk.Frame(editor_content, style="Surface.TFrame")
         watermark_frame.grid(row=5, column=0, sticky="ew", pady=(18, 0))
@@ -950,7 +961,7 @@ class ExifOverlayApp:
         self._preview_photo = ImageTk.PhotoImage(image)
         self.preview_label.config(image=self._preview_photo, text="")
         self.preview_caption_var.set(f"Preview de: {Path(preview_path).name}")
-        mode_label = "marca de agua" if self._draft_preset.mode == "watermark" else "overlay EXIF"
+        mode_label = _preview_mode_label(self._draft_preset.mode)
         self.preview_meta_var.set(
             f"Resolucion del preview: {image.width}x{image.height}. Vista actual en modo {mode_label}; el render final usa esta misma configuracion."
         )
@@ -1008,6 +1019,7 @@ class ExifOverlayApp:
             self.preview_items_var.set(("La carpeta seleccionada no contiene archivos JPG, JPEG o PNG.",))
             self.preview_listbox.selection_clear(0, "end")
             self.process_button.config(state="disabled")
+            self.frame_4k_button.config(state="disabled")
             self._show_preview_placeholder("La carpeta seleccionada no contiene imagenes compatibles.")
             self._set_status(
                 "La carpeta seleccionada no contiene archivos JPG, JPEG o PNG.",
@@ -1049,6 +1061,31 @@ class ExifOverlayApp:
         self._worker_thread.start()
         self.root.after(50, self._poll_processing_events)
 
+    def process_images_16_9(self) -> None:
+        if not self.selected_paths:
+            self._set_status("Selecciona imagenes o una carpeta antes de generar el 16:9 4K.", is_error=True, title="Falta seleccion")
+            return
+
+        total_images = len(self.selected_paths)
+        preset_snapshot = self._build_draft_preset().normalized()
+
+        self._set_processing_state(is_processing=True)
+        self._update_progress(0, total_images)
+        self.current_file_var.set("Preparando lote 16:9 4K...")
+        self._set_status(f"Generando {total_images} imagen(es) en 16:9 4K...", is_error=False, title="Procesando")
+        self._close_requested = False
+        self._cancel_event = Event()
+        self.stop_button.config(state="normal")
+        self._event_queue = Queue()
+        self._worker_thread = Thread(
+            target=self._process_images_16_9_worker,
+            args=(list(self.selected_paths), preset_snapshot, self._event_queue, self._cancel_event),
+            daemon=True,
+            name="exif-overlay-ui-frame-worker",
+        )
+        self._worker_thread.start()
+        self.root.after(50, self._poll_processing_events)
+
     def _process_images_worker(
         self,
         image_paths: list[str],
@@ -1061,6 +1098,27 @@ class ExifOverlayApp:
                 image_paths,
                 preset=preset,
                 output_subfolder="exportadas",
+                progress_callback=lambda progress: event_queue.put(("progress", progress)),
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            event_queue.put(("fatal_error", str(exc)))
+            return
+
+        event_queue.put(("completed", result))
+
+    def _process_images_16_9_worker(
+        self,
+        image_paths: list[str],
+        preset: OverlayPreset,
+        event_queue: Queue[tuple[str, BatchProgress | BatchProcessingResult | str]],
+        cancel_event: Event,
+    ) -> None:
+        try:
+            result = process_images_16_9_batch(
+                image_paths,
+                preset=preset,
+                output_subfolder="exportadas_16x9_4k",
                 progress_callback=lambda progress: event_queue.put(("progress", progress)),
                 cancel_event=cancel_event,
             )
@@ -1178,10 +1236,12 @@ class ExifOverlayApp:
         if self.selected_paths:
             self.preview_listbox.selection_set(0)
         self.process_button.config(state="normal" if self.selected_paths else "disabled")
+        self.frame_4k_button.config(state="normal" if self.selected_paths else "disabled")
 
     def _set_processing_state(self, is_processing: bool) -> None:
         button_state = "disabled" if is_processing else ("normal" if self.selected_paths else "disabled")
         self.process_button.config(state=button_state)
+        self.frame_4k_button.config(state=button_state)
         self.select_files_button.config(state="disabled" if is_processing else "normal")
         self.select_folder_button.config(state="disabled" if is_processing else "normal")
         self.stop_button.config(state="normal" if is_processing and self._cancel_event is not None else "disabled")
@@ -1320,3 +1380,11 @@ def _format_slider_value(value: object) -> str:
         return str(int(round(float(value))))
     except (TypeError, ValueError):
         return "0"
+
+
+def _preview_mode_label(mode: str) -> str:
+    if mode == "watermark":
+        return "marca de agua"
+    if mode == "none":
+        return "sin overlay"
+    return "overlay EXIF"
