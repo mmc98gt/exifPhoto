@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, PngImagePlugin, UnidentifiedImageError
 
@@ -12,6 +15,9 @@ MAX_OUTPUT_HEIGHT = 2160
 FRAME_4K_SIZE = (3840, 2160)
 FRAME_BACKGROUND_BLUR_RADIUS = 42
 PHOTO_NUMBER_REGEX = re.compile(r"(\d+)(?!.*\d)")
+VIDEO_CLIP_DURATION_SECONDS = 3
+VIDEO_CLIP_FPS = 30
+VIDEO_CLIP_VIDEO_BITRATE = "8M"
 
 
 def build_overlay_text(exif_data: dict[str, str], field_config: OverlayFieldConfig) -> str:
@@ -112,6 +118,35 @@ def create_blurred_frame_copy(
     return str(output_path.resolve())
 
 
+def create_blurred_frame_video_clip(
+    image_path: str,
+    audio_path: str,
+    exif_data: dict[str, str] | None = None,
+    preset: OverlayPreset | None = None,
+    output_subfolder: str = "exportadas_16x9_4k_clip",
+    duration_seconds: int = VIDEO_CLIP_DURATION_SECONDS,
+) -> str:
+    path = Path(image_path)
+    _validate_input_path(path)
+    audio_file = Path(audio_path)
+    if not audio_file.exists() or not audio_file.is_file():
+        raise FileNotFoundError(f"No se encontro el audio para el clip: {audio_file}")
+
+    output_path = _get_output_path(path, output_subfolder, "frame_4k_clip")
+    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
+    overlayed_image = render_overlay(image_path, exif_data, active_preset)
+    framed_image = _render_blurred_frame(overlayed_image).convert("RGB")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame_temp_path = _create_temporary_frame_file(framed_image, output_dir=output_path.parent, stem=output_path.stem)
+    try:
+        _encode_video_clip(frame_temp_path, audio_file, output_path, duration_seconds=duration_seconds)
+    finally:
+        frame_temp_path.unlink(missing_ok=True)
+
+    return str(output_path.resolve())
+
+
 def _render_prepared_image(base_image: Image.Image, exif_data: dict[str, str], preset: OverlayPreset, image_path: Path) -> Image.Image:
     if preset.mode == "none":
         return base_image.copy()
@@ -133,6 +168,74 @@ def _render_blurred_frame(base_image: Image.Image) -> Image.Image:
     if "A" in base_image.getbands():
         return background
     return background.convert(base_image.mode)
+
+
+def _create_temporary_frame_file(image: Image.Image, output_dir: Path, stem: str) -> Path:
+    file_descriptor, temp_path = tempfile.mkstemp(prefix=f"{stem}_", suffix=".png", dir=output_dir)
+    os.close(file_descriptor)
+    frame_path = Path(temp_path)
+    image.save(frame_path, format="PNG")
+    return frame_path
+
+
+def _encode_video_clip(frame_path: Path, audio_path: Path, output_path: Path, duration_seconds: int) -> None:
+    ffmpeg_path = _resolve_ffmpeg_executable()
+    last_error = ""
+
+    encoder_variants = (
+        ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", VIDEO_CLIP_VIDEO_BITRATE],
+        ["-c:v", "h264_amf", "-quality", "quality", "-b:v", VIDEO_CLIP_VIDEO_BITRATE],
+        ["-c:v", "h264_qsv", "-global_quality", "23", "-look_ahead", "0"],
+        ["-c:v", "libx264", "-preset", "medium", "-tune", "stillimage"],
+        ["-c:v", "mpeg4", "-q:v", "2"],
+    )
+    duration_text = str(max(1, duration_seconds))
+
+    for encoder_args in encoder_variants:
+        output_path.unlink(missing_ok=True)
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-loop",
+            "1",
+            "-framerate",
+            str(VIDEO_CLIP_FPS),
+            "-i",
+            str(frame_path),
+            "-i",
+            str(audio_path),
+            "-t",
+            duration_text,
+            *encoder_args,
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            str(VIDEO_CLIP_FPS),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        completed_process = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed_process.returncode == 0 and output_path.exists():
+            return
+        last_error = (completed_process.stderr or completed_process.stdout or "ffmpeg no genero salida.").strip()
+
+    raise RuntimeError(f"No se pudo generar el clip de video: {last_error}")
+
+
+def _resolve_ffmpeg_executable() -> str:
+    try:
+        import imageio_ffmpeg
+    except ImportError as exc:
+        raise RuntimeError(
+            "Falta la dependencia imageio-ffmpeg. Instalala para exportar clips de video."
+        ) from exc
+
+    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def _validate_input_path(path: Path) -> None:
@@ -172,13 +275,19 @@ def _get_output_path(image_path: Path, output_subfolder: str, mode: str) -> Path
     output_dir = _get_output_dir(image_path, output_subfolder)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    extension = ".png" if image_path.suffix.lower() == ".png" else ".jpg"
+    if mode == "frame_4k_clip":
+        extension = ".mp4"
+    else:
+        extension = ".png" if image_path.suffix.lower() == ".png" else ".jpg"
+
     if mode == "watermark":
         suffix = "_watermark"
     elif mode == "none":
         suffix = "_clean"
     elif mode == "frame_4k":
         suffix = "_16x9_4k"
+    elif mode == "frame_4k_clip":
+        suffix = "_16x9_4k_clip"
     else:
         suffix = "_exif"
     base_name = f"{image_path.stem}{suffix}"

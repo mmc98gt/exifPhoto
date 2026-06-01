@@ -8,7 +8,13 @@ from tkinter import colorchooser, filedialog, ttk
 
 from PIL import Image, ImageTk
 
-from app.batch_service import BatchProcessingResult, BatchProgress, process_images as process_images_batch, process_images_to_16_9_frame as process_images_16_9_batch
+from app.batch_service import (
+    BatchProcessingResult,
+    BatchProgress,
+    process_images as process_images_batch,
+    process_images_to_16_9_frame as process_images_16_9_batch,
+    process_images_to_16_9_video_clip as process_images_16_9_video_batch,
+)
 from app.exif_service import extract_display_data
 from app.image_service import render_overlay
 from app.overlay_config import FONT_FAMILIES, OverlayFieldConfig, OverlayPreset, OverlayStyle, ShadowStyle, StrokeStyle, WatermarkConfig, clone_preset, get_builtin_presets
@@ -51,6 +57,7 @@ POSITION_LABEL_TO_ID = {
     "Centro": "center",
 }
 POSITION_ID_TO_LABEL = {value: key for key, value in POSITION_LABEL_TO_ID.items()}
+CLIP_AUDIO_PATH = Path(__file__).resolve().parent.parent / "sounds" / "camara.mp3"
 
 
 class ExifOverlayApp:
@@ -219,7 +226,7 @@ class ExifOverlayApp:
         ttk.Label(header, text="EXIF Overlay Studio", style="HeaderTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="Preview en vivo de la primera foto, presets persistentes, exportacion EXIF/marca de agua y version 16:9 4K con fondo desenfocado.",
+            text="Preview en vivo de la primera foto, presets persistentes, exportacion EXIF, version 16:9 4K y clip 16:9 de 3 segundos con sonido.",
             style="HeaderSubtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
@@ -241,6 +248,7 @@ class ExifOverlayApp:
         actions_panel.columnconfigure(2, weight=1)
         actions_panel.columnconfigure(3, weight=1)
         actions_panel.columnconfigure(4, weight=1)
+        actions_panel.columnconfigure(5, weight=1)
 
         self.select_files_button = ttk.Button(
             actions_panel,
@@ -276,6 +284,15 @@ class ExifOverlayApp:
         )
         self.frame_4k_button.grid(row=0, column=3, sticky="ew", padx=(0, 10))
 
+        self.video_clip_button = ttk.Button(
+            actions_panel,
+            text="Clip 16:9 + sonido",
+            command=self.process_images_16_9_clip,
+            state="disabled",
+            style="Accent.TButton",
+        )
+        self.video_clip_button.grid(row=0, column=4, sticky="ew", padx=(0, 10))
+
         self.stop_button = ttk.Button(
             actions_panel,
             text="Parar",
@@ -283,13 +300,13 @@ class ExifOverlayApp:
             state="disabled",
             style="Stop.TButton",
         )
-        self.stop_button.grid(row=0, column=4, sticky="ew")
+        self.stop_button.grid(row=0, column=5, sticky="ew")
 
         ttk.Label(
             actions_panel,
-            text="Exportar lote guarda en _exportadas. Generar 16:9 4K crea una carpeta hermana terminada en _exportadas_16x9_4k.",
+            text="Exportar lote guarda en _exportadas. Generar 16:9 4K crea _exportadas_16x9_4k. Clip 16:9 + sonido crea _exportadas_16x9_4k_clip con videos MP4 de 3 segundos.",
             style="PanelBody.TLabel",
-        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(14, 0))
+        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(14, 0))
 
         content = ttk.Frame(container, style="App.TFrame")
         content.grid(row=2, column=0, sticky="nsew")
@@ -1086,6 +1103,31 @@ class ExifOverlayApp:
         self._worker_thread.start()
         self.root.after(50, self._poll_processing_events)
 
+    def process_images_16_9_clip(self) -> None:
+        if not self.selected_paths:
+            self._set_status("Selecciona imagenes o una carpeta antes de generar el clip 16:9.", is_error=True, title="Falta seleccion")
+            return
+
+        total_images = len(self.selected_paths)
+        preset_snapshot = self._build_draft_preset().normalized()
+
+        self._set_processing_state(is_processing=True)
+        self._update_progress(0, total_images)
+        self.current_file_var.set("Preparando clips 16:9 con sonido...")
+        self._set_status(f"Generando {total_images} clip(s) de 3 segundos en 16:9...", is_error=False, title="Procesando")
+        self._close_requested = False
+        self._cancel_event = Event()
+        self.stop_button.config(state="normal")
+        self._event_queue = Queue()
+        self._worker_thread = Thread(
+            target=self._process_images_16_9_clip_worker,
+            args=(list(self.selected_paths), preset_snapshot, self._event_queue, self._cancel_event),
+            daemon=True,
+            name="exif-overlay-ui-video-worker",
+        )
+        self._worker_thread.start()
+        self.root.after(50, self._poll_processing_events)
+
     def _process_images_worker(
         self,
         image_paths: list[str],
@@ -1119,6 +1161,28 @@ class ExifOverlayApp:
                 image_paths,
                 preset=preset,
                 output_subfolder="exportadas_16x9_4k",
+                progress_callback=lambda progress: event_queue.put(("progress", progress)),
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            event_queue.put(("fatal_error", str(exc)))
+            return
+
+        event_queue.put(("completed", result))
+
+    def _process_images_16_9_clip_worker(
+        self,
+        image_paths: list[str],
+        preset: OverlayPreset,
+        event_queue: Queue[tuple[str, BatchProgress | BatchProcessingResult | str]],
+        cancel_event: Event,
+    ) -> None:
+        try:
+            result = process_images_16_9_video_batch(
+                image_paths,
+                audio_path=str(CLIP_AUDIO_PATH),
+                preset=preset,
+                output_subfolder="exportadas_16x9_4k_clip",
                 progress_callback=lambda progress: event_queue.put(("progress", progress)),
                 cancel_event=cancel_event,
             )
@@ -1237,11 +1301,13 @@ class ExifOverlayApp:
             self.preview_listbox.selection_set(0)
         self.process_button.config(state="normal" if self.selected_paths else "disabled")
         self.frame_4k_button.config(state="normal" if self.selected_paths else "disabled")
+        self.video_clip_button.config(state="normal" if self.selected_paths else "disabled")
 
     def _set_processing_state(self, is_processing: bool) -> None:
         button_state = "disabled" if is_processing else ("normal" if self.selected_paths else "disabled")
         self.process_button.config(state=button_state)
         self.frame_4k_button.config(state=button_state)
+        self.video_clip_button.config(state=button_state)
         self.select_files_button.config(state="disabled" if is_processing else "normal")
         self.select_folder_button.config(state="disabled" if is_processing else "normal")
         self.stop_button.config(state="normal" if is_processing and self._cancel_event is not None else "disabled")

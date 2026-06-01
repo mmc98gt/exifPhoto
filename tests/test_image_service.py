@@ -2,12 +2,21 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+import subprocess
+from unittest.mock import patch
 
 import piexif
 from PIL import Image
 from PIL import PngImagePlugin
 
-from app.image_service import build_overlay_text, create_annotated_copy, create_blurred_frame_copy, render_blurred_fill_frame, render_overlay
+from app.image_service import (
+    build_overlay_text,
+    create_annotated_copy,
+    create_blurred_frame_copy,
+    create_blurred_frame_video_clip,
+    render_blurred_fill_frame,
+    render_overlay,
+)
 from app.overlay_config import OverlayFieldConfig, OverlayPreset, OverlayStyle, ShadowStyle, StrokeStyle, WatermarkConfig, get_builtin_presets
 
 
@@ -159,6 +168,71 @@ class CreateAnnotatedCopyTests(unittest.TestCase):
             with Image.open(output_path) as processed_image:
                 self.assertEqual(processed_image.size, (3840, 2160))
                 self.assertFalse(_has_non_background_pixels(processed_image))
+
+    def test_create_blurred_frame_video_clip_creates_mp4_in_dedicated_export_folder(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "portrait.jpg"
+            audio_path = Path(temp_dir) / "camara.mp3"
+            Image.new("RGB", (1200, 1800), "#cc3300").save(image_path, format="JPEG")
+            audio_path.write_bytes(b"fake mp3")
+
+            def fake_run(command: list[str], capture_output: bool, text: bool, check: bool) -> subprocess.CompletedProcess[str]:
+                self.assertTrue(capture_output)
+                self.assertTrue(text)
+                self.assertFalse(check)
+                Path(command[-1]).write_bytes(b"fake mp4")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with patch("app.image_service._resolve_ffmpeg_executable", return_value="fake-ffmpeg"), patch(
+                "app.image_service.subprocess.run",
+                side_effect=fake_run,
+            ) as run_mock:
+                output_path = Path(create_blurred_frame_video_clip(str(image_path), str(audio_path)))
+
+            self.assertTrue(output_path.exists())
+            self.assertEqual(output_path.parent.name, f"{image_path.parent.name}_exportadas_16x9_4k_clip")
+            self.assertEqual(output_path.name, "portrait_16x9_4k_clip.mp4")
+            command = run_mock.call_args.args[0]
+            self.assertIn(str(audio_path), command)
+            self.assertEqual(command[-1], str(output_path))
+
+    def test_create_blurred_frame_video_clip_requires_existing_audio_file(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "portrait.jpg"
+            missing_audio_path = Path(temp_dir) / "missing.mp3"
+            Image.new("RGB", (1200, 1800), "#cc3300").save(image_path, format="JPEG")
+
+            with self.assertRaises(FileNotFoundError):
+                create_blurred_frame_video_clip(str(image_path), str(missing_audio_path))
+
+    def test_create_blurred_frame_video_clip_falls_back_from_gpu_to_cpu(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "portrait.jpg"
+            audio_path = Path(temp_dir) / "camara.mp3"
+            Image.new("RGB", (1200, 1800), "#cc3300").save(image_path, format="JPEG")
+            audio_path.write_bytes(b"fake mp3")
+
+            run_calls: list[list[str]] = []
+
+            def fake_run(command: list[str], capture_output: bool, text: bool, check: bool) -> subprocess.CompletedProcess[str]:
+                run_calls.append(command)
+                if len(run_calls) < 4:
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="encoder unavailable")
+                Path(command[-1]).write_bytes(b"fake mp4")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with patch("app.image_service._resolve_ffmpeg_executable", return_value="fake-ffmpeg"), patch(
+                "app.image_service.subprocess.run",
+                side_effect=fake_run,
+            ):
+                output_path = Path(create_blurred_frame_video_clip(str(image_path), str(audio_path)))
+
+            self.assertTrue(output_path.exists())
+            self.assertGreaterEqual(len(run_calls), 4)
+            self.assertIn("h264_nvenc", run_calls[0])
+            self.assertIn("h264_amf", run_calls[1])
+            self.assertIn("h264_qsv", run_calls[2])
+            self.assertIn("libx264", run_calls[3])
 
     def test_preserves_png_extension_for_png_output(self) -> None:
         with temporary_test_dir() as temp_dir:

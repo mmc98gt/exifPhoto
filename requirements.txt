@@ -1,2 +1,3 @@
 Pillow
 piexif
+imageio-ffmpeg

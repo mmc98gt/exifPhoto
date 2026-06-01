@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app.batch_service import BatchProgress, process_images, process_images_to_16_9_frame
+from app.batch_service import BatchProgress, process_images, process_images_to_16_9_frame, process_images_to_16_9_video_clip
 from app.overlay_config import OverlayPreset, OverlayStyle, ShadowStyle, StrokeStyle, WatermarkConfig, get_builtin_presets
 
 
@@ -170,6 +170,69 @@ class ProcessImagesTests(unittest.TestCase):
 
             self.assertEqual(result.processed_count, 1)
             self.assertTrue((_expected_export_dir_16_9(Path(temp_dir)) / "plain_16x9_4k.jpg").exists())
+
+    def test_process_images_to_16_9_video_clip_uses_selected_exif_preset(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "frame.jpg"
+            audio_path = Path(temp_dir) / "camara.mp3"
+            output_path = Path(temp_dir) / "frame_16x9_4k_clip.mp4"
+            Image.new("RGB", (800, 1200), "white").save(image_path, format="JPEG")
+            audio_path.write_bytes(b"fake mp3")
+            preset = OverlayPreset(
+                preset_id="frame_video_exif",
+                name="Frame video EXIF",
+                built_in=False,
+                mode="exif",
+                style=OverlayStyle(
+                    font_family="Arial",
+                    font_size_mode="manual",
+                    font_size=80,
+                    text_color="#000000",
+                    shadow=ShadowStyle(enabled=False, color="#000000", opacity=0, offset_x=0, offset_y=0),
+                    stroke=StrokeStyle(enabled=False, color="#000000", opacity=0, width=0),
+                ),
+            )
+
+            with patch("app.batch_service.extract_display_data", return_value=_sample_data()), patch(
+                "app.batch_service.create_blurred_frame_video_clip",
+                return_value=str(output_path),
+            ) as create_mock:
+                result = process_images_to_16_9_video_clip(
+                    [str(image_path)],
+                    audio_path=str(audio_path),
+                    preset=preset,
+                    max_workers=1,
+                )
+
+            self.assertEqual(result.processed_count, 1)
+            create_mock.assert_called_once()
+            self.assertEqual(create_mock.call_args.kwargs["audio_path"], str(audio_path))
+
+    def test_process_images_to_16_9_video_clip_skips_exif_for_none_mode(self) -> None:
+        with temporary_test_dir() as temp_dir:
+            image_path = Path(temp_dir) / "plain.jpg"
+            audio_path = Path(temp_dir) / "camara.mp3"
+            Image.new("RGB", (800, 1200), "white").save(image_path, format="JPEG")
+            audio_path.write_bytes(b"fake mp3")
+            preset = OverlayPreset(
+                preset_id="frame_video_none",
+                name="Frame video none",
+                built_in=False,
+                mode="none",
+            )
+
+            with patch("app.batch_service.extract_display_data", side_effect=AssertionError("No deberia leer EXIF")), patch(
+                "app.batch_service.create_blurred_frame_video_clip",
+                return_value=str(Path(temp_dir) / "plain_16x9_4k_clip.mp4"),
+            ):
+                result = process_images_to_16_9_video_clip(
+                    [str(image_path)],
+                    audio_path=str(audio_path),
+                    preset=preset,
+                    max_workers=1,
+                )
+
+            self.assertEqual(result.processed_count, 1)
 
 
 @contextmanager

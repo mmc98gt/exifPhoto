@@ -8,7 +8,7 @@ from threading import Event
 from typing import Callable
 
 from app.exif_service import extract_display_data
-from app.image_service import create_annotated_copy, create_blurred_frame_copy
+from app.image_service import create_annotated_copy, create_blurred_frame_copy, create_blurred_frame_video_clip
 from app.overlay_config import OverlayPreset, get_builtin_presets
 
 
@@ -80,6 +80,36 @@ def process_images_to_16_9_frame(
     def image_processor(image_path: str) -> str:
         exif_data = extract_display_data(image_path) if active_preset.mode == "exif" else None
         return create_blurred_frame_copy(image_path, exif_data, active_preset, output_subfolder=output_subfolder)
+
+    return _process_images_with_handler(
+        image_paths=image_paths,
+        image_processor=image_processor,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )
+
+
+def process_images_to_16_9_video_clip(
+    image_paths: list[str],
+    audio_path: str,
+    preset: OverlayPreset | None = None,
+    output_subfolder: str = "exportadas_16x9_4k_clip",
+    max_workers: int | None = None,
+    progress_callback: Callable[[BatchProgress], None] | None = None,
+    cancel_event: Event | None = None,
+) -> BatchProcessingResult:
+    active_preset = preset.normalized() if preset is not None else get_builtin_presets()[0]
+
+    def image_processor(image_path: str) -> str:
+        exif_data = extract_display_data(image_path) if active_preset.mode == "exif" else None
+        return create_blurred_frame_video_clip(
+            image_path,
+            audio_path=audio_path,
+            exif_data=exif_data,
+            preset=active_preset,
+            output_subfolder=output_subfolder,
+        )
 
     return _process_images_with_handler(
         image_paths=image_paths,
