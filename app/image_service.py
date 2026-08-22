@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from pathlib import Path
 import re
 import subprocess
@@ -606,11 +607,55 @@ def _select_font(
 def _load_font(font_family: str, size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
     font_files = FONT_FAMILY_TO_FILES.get(font_family, FONT_FAMILY_TO_FILES["Arial"])
     for font_name in font_files:
+        font_path = _resolve_font_path(font_name)
+        if font_path is None:
+            continue
         try:
-            return ImageFont.truetype(font_name, size=size)
+            return ImageFont.truetype(str(font_path), size=size)
         except OSError:
             continue
     return ImageFont.load_default()
+
+
+@lru_cache(maxsize=None)
+def _resolve_font_path(font_name: str) -> Path | None:
+    """Find a configured font by filename on the current operating system.
+
+    Pillow does not ask the OS font manager to resolve a bare filename. The
+    previous implementation therefore only worked when the font happened to
+    be in the process working directory and silently used Pillow's tiny
+    default bitmap font otherwise. That made every font option look identical
+    in both EXIF and text-watermark previews.
+    """
+    requested_path = Path(font_name).expanduser()
+    if requested_path.is_absolute() and requested_path.is_file():
+        return requested_path
+
+    search_directories = (
+        Path(__file__).resolve().parent.parent / "fonts",
+        Path.home() / "Library" / "Fonts",
+        Path("/Library/Fonts"),
+        Path("/System/Library/Fonts"),
+        Path.home() / ".fonts",
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts"),
+        Path("C:/Windows/Fonts"),
+    )
+
+    for directory in search_directories:
+        if not directory.is_dir():
+            continue
+        direct_match = directory / requested_path.name
+        if direct_match.is_file():
+            return direct_match
+        try:
+            for candidate in directory.rglob(requested_path.name):
+                if candidate.is_file():
+                    return candidate
+        except OSError:
+            continue
+
+    return None
 
 
 def _resolve_text_position(

@@ -4,9 +4,12 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 FONT_FAMILY_TO_FILES = {
-    "Arial": ("arial.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
-    "DejaVu Sans": ("DejaVuSans.ttf", "LiberationSans-Regular.ttf", "arial.ttf"),
-    "Liberation Sans": ("LiberationSans-Regular.ttf", "DejaVuSans.ttf", "arial.ttf"),
+    "Arial": ("Arial.ttf", "arial.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
+    # Keep platform-neutral names first, then use common installed sans-serif
+    # alternatives so a missing Linux font does not make every choice render
+    # with Pillow's same default bitmap font (especially on macOS).
+    "DejaVu Sans": ("DejaVuSans.ttf", "Helvetica.ttf", "Helvetica.ttc", "LiberationSans-Regular.ttf", "Arial.ttf", "arial.ttf"),
+    "Liberation Sans": ("LiberationSans-Regular.ttf", "Trebuchet MS.ttf", "DejaVuSans.ttf", "Arial.ttf", "arial.ttf"),
 }
 FONT_FAMILIES = tuple(FONT_FAMILY_TO_FILES)
 MIN_FONT_SIZE = 12
